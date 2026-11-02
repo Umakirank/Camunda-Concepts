@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  DMN 4: FRAUD RISK SCORE                          Hit policy: COLLECT SUM (C+)
+  Used by: fraud-check.bpmn (called by insurance-claim.bpmn via Call Activity)
+  =============================================================================
+  Classic SCORECARD pattern: every matching rule contributes points, SUM adds
+  them up. The process then compares the total against a threshold (>= 70 ->
+  manual fraud investigation). Scorecards are easy for the business to tune:
+  change points, add a rule, no code change, just redeploy the DMN.
+
+  Example: claimAmount 80,000, policy 10 days old, 0 previous claims
+      30 (amount) + 40 (new policy) + 0 (baseline) = 70  -> investigate
+
+  Performance note: COLLECT evaluates EVERY rule (no short-circuit like FIRST).
+  For tables with thousands of rules prefer FIRST/UNIQUE or split the table.
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:camunda="http://camunda.org/schema/1.0/dmn"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_FraudScore" name="Fraud Risk Score"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             exporter="Camunda Modeler" exporterVersion="5.40.0"
+             modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+
+  <decision id="fraud-risk-score" name="Fraud Risk Score" camunda:historyTimeToLive="P30D">
+    <description>Adds up fraud indicator points.</description>
+    <decisionTable id="DecisionTable_fraud-risk-score" hitPolicy="COLLECT" aggregation="SUM">
+      <input id="Input_fraud-risk-score_1" label="Claim amount">
+        <inputExpression id="InputExpression_fraud-risk-score_1" typeRef="double">
+          <text>claimAmount</text>
+        </inputExpression>
+      </input>
+      <input id="Input_fraud-risk-score_2" label="Days since policy start">
+        <inputExpression id="InputExpression_fraud-risk-score_2" typeRef="integer">
+          <text>daysSincePolicyStart</text>
+        </inputExpression>
+      </input>
+      <input id="Input_fraud-risk-score_3" label="Previous claims (3 years)">
+        <inputExpression id="InputExpression_fraud-risk-score_3" typeRef="integer">
+          <text>previousClaims</text>
+        </inputExpression>
+      </input>
+      <output id="Output_fraud-risk-score_1" label="Fraud points" name="score" typeRef="integer" />
+      <rule id="Rule_fraud-risk-score_1">
+        <description>Baseline so the SUM is never null</description>
+        <inputEntry id="InputEntry_fraud-risk-score_1_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_1_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_1_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_fraud-risk-score_1_1"><text>0</text></outputEntry>
+      </rule>
+      <rule id="Rule_fraud-risk-score_2">
+        <description>High claim amount</description>
+        <inputEntry id="InputEntry_fraud-risk-score_2_1"><text>&gt; 50000</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_2_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_2_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_fraud-risk-score_2_1"><text>30</text></outputEntry>
+      </rule>
+      <rule id="Rule_fraud-risk-score_3">
+        <description>Claim very soon after buying the policy</description>
+        <inputEntry id="InputEntry_fraud-risk-score_3_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_3_2"><text>&lt; 30</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_3_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_fraud-risk-score_3_1"><text>40</text></outputEntry>
+      </rule>
+      <rule id="Rule_fraud-risk-score_4">
+        <description>Some claim history</description>
+        <inputEntry id="InputEntry_fraud-risk-score_4_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_4_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_4_3"><text>[1..2]</text></inputEntry>
+        <outputEntry id="OutputEntry_fraud-risk-score_4_1"><text>10</text></outputEntry>
+      </rule>
+      <rule id="Rule_fraud-risk-score_5">
+        <description>Frequent claimant</description>
+        <inputEntry id="InputEntry_fraud-risk-score_5_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_5_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_fraud-risk-score_5_3"><text>&gt;= 3</text></inputEntry>
+        <outputEntry id="OutputEntry_fraud-risk-score_5_1"><text>25</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_Definitions_FraudScore">
+      <dmndi:DMNShape id="DMNShape_fraud-risk-score" dmnElementRef="fraud-risk-score">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

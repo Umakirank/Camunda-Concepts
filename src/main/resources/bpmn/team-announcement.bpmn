@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  SUPPORTING PROCESS: TEAM ANNOUNCEMENT                 key: team-announcement
+  =============================================================================
+  Started by the SIGNAL "EmployeeOnboarded" thrown at the end of
+  employee-onboarding.bpmn (or by runtimeService.createSignalEvent(..).send()).
+  Signals are 1:N broadcasts, messages are 1:1 targeted - that is the key
+  difference to remember for interviews.
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_TeamAnnouncement" targetNamespace="http://academy.com/bpmn"
+                  exporter="Camunda Modeler" exporterVersion="5.40.0"
+                  modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+  <bpmn:process id="team-announcement" name="Team Announcement" isExecutable="true" camunda:historyTimeToLive="P30D" camunda:versionTag="1.0">
+    <bpmn:startEvent id="StartEvent_EmployeeOnboarded" name="Employee onboarded">
+      <bpmn:documentation>SIGNAL start event: a NEW instance of this process starts every time the signal is broadcast.</bpmn:documentation>
+      <bpmn:signalEventDefinition id="SignalDef_Start" signalRef="Signal_EmployeeOnboarded" />
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Task_PostAnnouncement" name="Post welcome announcement" camunda:delegateExpression="${teamAnnouncementDelegate}">
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_Announced" name="Announced">
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_EmployeeOnboarded" targetRef="Task_PostAnnouncement" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_PostAnnouncement" targetRef="EndEvent_Announced" />
+  </bpmn:process>
+  <bpmn:signal id="Signal_EmployeeOnboarded" name="EmployeeOnboarded" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_team-announcement">
+    <bpmndi:BPMNPlane id="BPMNPlane_team-announcement" bpmnElement="team-announcement">
+      <bpmndi:BPMNShape id="Shape_StartEvent_EmployeeOnboarded" bpmnElement="StartEvent_EmployeeOnboarded">
+        <dc:Bounds x="82" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_PostAnnouncement" bpmnElement="Task_PostAnnouncement">
+        <dc:Bounds x="200" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_Announced" bpmnElement="EndEvent_Announced">
+        <dc:Bounds x="382" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Flow_1" bpmnElement="Flow_1">
+        <di:waypoint x="118" y="120" />
+        <di:waypoint x="200" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_2" bpmnElement="Flow_2">
+        <di:waypoint x="300" y="120" />
+        <di:waypoint x="382" y="120" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

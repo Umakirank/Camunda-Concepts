@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  DMN 6: CREDIT CARD DECISIONS
+         "credit-card-eligibility"  Hit policy ANY (A)
+         "credit-card-offers"       Hit policy RULE ORDER (R)
+  Used by: credit-card-application.bpmn
+  =============================================================================
+  ANY (A): several rules MAY match, but all matching rules MUST produce the
+  SAME output. The engine returns that single (common) output. If matching
+  rules disagree, evaluation fails with DMN-03002 ("Hit policy 'ANY' only
+  allows multiple matching rules with equal output").
+  Typical use: "knock-out" rules. Any of the three reject reasons -> REJECT.
+  An under-21 applicant with defaults matches two REJECT rules - fine, same
+  output. LIMITATION (by design): you cannot add a "reason" column with a
+  different text per rule, because then the outputs differ -> error.
+  If you need all reasons, use COLLECT instead.
+
+  RULE ORDER (R): returns ALL matching rules, as a LIST, in the order the
+  rules appear in the table. Use it when the business wants a ranked list:
+  "show the applicant every offer they qualify for, best offer first".
+  The process uses mapDecisionResult="collectEntries" -> List<String>.
+
+  Not supported in Camunda 7: PRIORITY (P) and OUTPUT ORDER (O). Deploying a
+  table with them fails. To emulate OUTPUT ORDER, use RULE ORDER/COLLECT and
+  sort the list in Java (see DecisionEvaluationService#outputOrderEmulation).
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:camunda="http://camunda.org/schema/1.0/dmn"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_CreditCard" name="Credit Card Decisions"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             exporter="Camunda Modeler" exporterVersion="5.40.0"
+             modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+
+  <decision id="credit-card-eligibility" name="Credit Card Eligibility" camunda:historyTimeToLive="P30D">
+    <description>Knock-out rules: ACCEPT only if no reject rule matches.</description>
+    <decisionTable id="DecisionTable_credit-card-eligibility" hitPolicy="ANY">
+      <input id="Input_credit-card-eligibility_1" label="Applicant age">
+        <inputExpression id="InputExpression_credit-card-eligibility_1" typeRef="integer">
+          <text>age</text>
+        </inputExpression>
+      </input>
+      <input id="Input_credit-card-eligibility_2" label="Monthly income">
+        <inputExpression id="InputExpression_credit-card-eligibility_2" typeRef="double">
+          <text>monthlyIncome</text>
+        </inputExpression>
+      </input>
+      <input id="Input_credit-card-eligibility_3" label="Existing loan defaults?">
+        <inputExpression id="InputExpression_credit-card-eligibility_3" typeRef="boolean">
+          <text>hasDefaults</text>
+        </inputExpression>
+      </input>
+      <output id="Output_credit-card-eligibility_1" label="Eligibility" name="eligibility" typeRef="string" />
+      <rule id="Rule_credit-card-eligibility_1">
+        <description>Too young</description>
+        <inputEntry id="InputEntry_credit-card-eligibility_1_1"><text>&lt; 21</text></inputEntry>
+        <inputEntry id="InputEntry_credit-card-eligibility_1_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_credit-card-eligibility_1_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_credit-card-eligibility_1_1"><text>"REJECT"</text></outputEntry>
+      </rule>
+      <rule id="Rule_credit-card-eligibility_2">
+        <description>Income too low</description>
+        <inputEntry id="InputEntry_credit-card-eligibility_2_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_credit-card-eligibility_2_2"><text>&lt; 25000</text></inputEntry>
+        <inputEntry id="InputEntry_credit-card-eligibility_2_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_credit-card-eligibility_2_1"><text>"REJECT"</text></outputEntry>
+      </rule>
+      <rule id="Rule_credit-card-eligibility_3">
+        <description>Has defaulted before</description>
+        <inputEntry id="InputEntry_credit-card-eligibility_3_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_credit-card-eligibility_3_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_credit-card-eligibility_3_3"><text>true</text></inputEntry>
+        <outputEntry id="OutputEntry_credit-card-eligibility_3_1"><text>"REJECT"</text></outputEntry>
+      </rule>
+      <rule id="Rule_credit-card-eligibility_4">
+        <description>Passed every knock-out rule</description>
+        <inputEntry id="InputEntry_credit-card-eligibility_4_1"><text>&gt;= 21</text></inputEntry>
+        <inputEntry id="InputEntry_credit-card-eligibility_4_2"><text>&gt;= 25000</text></inputEntry>
+        <inputEntry id="InputEntry_credit-card-eligibility_4_3"><text>false</text></inputEntry>
+        <outputEntry id="OutputEntry_credit-card-eligibility_4_1"><text>"ACCEPT"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <decision id="credit-card-offers" name="Credit Card Offers" camunda:historyTimeToLive="P30D">
+    <description>All offers the applicant qualifies for, best offer first.</description>
+    <decisionTable id="DecisionTable_credit-card-offers" hitPolicy="RULE ORDER">
+      <input id="Input_credit-card-offers_1" label="Monthly income">
+        <inputExpression id="InputExpression_credit-card-offers_1" typeRef="double">
+          <text>monthlyIncome</text>
+        </inputExpression>
+      </input>
+      <output id="Output_credit-card-offers_1" label="Offer" name="offer" typeRef="string" />
+      <rule id="Rule_credit-card-offers_1">
+        <description>Premium tier</description>
+        <inputEntry id="InputEntry_credit-card-offers_1_1"><text>&gt;= 200000</text></inputEntry>
+        <outputEntry id="OutputEntry_credit-card-offers_1_1"><text>"Unlimited airport lounge access"</text></outputEntry>
+      </rule>
+      <rule id="Rule_credit-card-offers_2">
+        <inputEntry id="InputEntry_credit-card-offers_2_1"><text>&gt;= 100000</text></inputEntry>
+        <outputEntry id="OutputEntry_credit-card-offers_2_1"><text>"5% cashback on travel"</text></outputEntry>
+      </rule>
+      <rule id="Rule_credit-card-offers_3">
+        <description>Everybody gets this</description>
+        <inputEntry id="InputEntry_credit-card-offers_3_1"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_credit-card-offers_3_1"><text>"Zero joining fee"</text></outputEntry>
+      </rule>
+      <rule id="Rule_credit-card-offers_4">
+        <inputEntry id="InputEntry_credit-card-offers_4_1"><text>&lt; 50000</text></inputEntry>
+        <outputEntry id="OutputEntry_credit-card-offers_4_1"><text>"Upgrade path to secured card"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_Definitions_CreditCard">
+      <dmndi:DMNShape id="DMNShape_credit-card-eligibility" dmnElementRef="credit-card-eligibility">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_credit-card-offers" dmnElementRef="credit-card-offers">
+        <dc:Bounds height="80" width="180" x="420" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

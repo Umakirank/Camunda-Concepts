@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  PROCESS 2: ORDER FULFILLMENT  (E-commerce)              key: order-fulfillment
+  =============================================================================
+  Business story
+    A web shop publishes "OrderPlaced". We price the order with two DMN tables,
+    charge the card through an external payment worker, then reserve stock and
+    create the invoice in parallel. We ask the carrier for a pickup and wait:
+    if the carrier confirms -> done; if nobody confirms within 1 hour we
+    COMPENSATE (refund + release stock) and cancel the order.
+
+  Concepts covered
+    * Message start event (start by message name + business key)
+    * Complex JSON object variable "order" (Spin/Jackson serialization)
+    * Business rule tasks with COLLECT MAX and COLLECT MIN, mapDecisionResult=singleEntry
+    * Expression-only service task (JUEL arithmetic)
+    * EXTERNAL TASK (camunda:type="external", topic, priority) + BPMN error from a worker
+    * Parallel gateway fork/join
+    * Send task, event-based gateway, intermediate message & timer catch events
+    * Compensation boundary events, compensation handlers (isForCompensation),
+      associations, compensation intermediate throw event
+  Try it
+    POST /api/orders  (see README for the JSON body)
+    POST /api/messages/ShipmentConfirmed?businessKey=ORD-1001
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_OrderFulfillment" targetNamespace="http://academy.com/bpmn"
+                  exporter="Camunda Modeler" exporterVersion="5.40.0"
+                  modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+  <bpmn:process id="order-fulfillment" name="Order Fulfillment" isExecutable="true" camunda:historyTimeToLive="P30D" camunda:versionTag="1.0">
+    <bpmn:documentation>E-commerce order: price with DMN, charge via external worker, reserve stock in parallel, wait for shipping.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_OrderPlaced" name="Order placed">
+      <bpmn:documentation>MESSAGE start event. Started with runtimeService.createMessageCorrelation('OrderPlaced').processInstanceBusinessKey(orderId).correlateStartMessage()</bpmn:documentation>
+      <bpmn:messageEventDefinition id="MsgDef_OrderPlaced" messageRef="Message_OrderPlaced" />
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Task_PrepareOrder" name="Prepare order" camunda:delegateExpression="${prepareOrderDelegate}">
+      <bpmn:documentation>Reads the JSON 'order' object variable and derives orderTotal / weightKg for the DMNs.</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:businessRuleTask id="Task_CalculateDiscount" name="Calculate discount" camunda:decisionRef="order-discount" camunda:mapDecisionResult="singleEntry" camunda:resultVariable="discountPercent">
+      <bpmn:documentation>DMN order-discount, COLLECT + MAX. singleEntry =&gt; just the number.</bpmn:documentation>
+    </bpmn:businessRuleTask>
+    <bpmn:businessRuleTask id="Task_CalculateShipping" name="Calculate shipping fee" camunda:decisionRef="shipping-fee" camunda:mapDecisionResult="singleEntry" camunda:resultVariable="shippingFee">
+      <bpmn:documentation>DMN shipping-fee, COLLECT + MIN (cheapest carrier).</bpmn:documentation>
+    </bpmn:businessRuleTask>
+    <bpmn:serviceTask id="Task_CalculatePayable" name="Calculate payable amount" camunda:expression="${orderTotal * (100 - discountPercent) / 100 + shippingFee}" camunda:resultVariable="payableAmount">
+      <bpmn:documentation>Pure JUEL arithmetic: no Java code at all. Result stored in 'payableAmount'.</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="Task_ChargePayment" name="Charge payment" camunda:type="external" camunda:topic="payment-charge" camunda:taskPriority="50">
+      <bpmn:documentation>EXTERNAL TASK. The engine only creates a work item on topic 'payment-charge'; PaymentExternalTaskWorker fetches, locks and completes it (pull model).</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="Gateway_ForkFulfilment">
+    </bpmn:parallelGateway>
+    <bpmn:serviceTask id="Task_ReserveInventory" name="Reserve inventory" camunda:delegateExpression="${reserveInventoryDelegate}">
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="Task_GenerateInvoice" name="Generate invoice" camunda:delegateExpression="${generateInvoiceDelegate}">
+      <bpmn:documentation>Updates the JSON order object (invoiceNumber) and writes it back as a typed JSON variable.</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="Gateway_JoinFulfilment">
+    </bpmn:parallelGateway>
+    <bpmn:sendTask id="Task_RequestShipment" name="Request shipment" camunda:delegateExpression="${requestShipmentDelegate}">
+    </bpmn:sendTask>
+    <bpmn:eventBasedGateway id="Gateway_WaitForShipment" name="Wait for carrier">
+      <bpmn:documentation>EVENT-BASED gateway: whichever event happens first wins, the other subscription is removed.</bpmn:documentation>
+    </bpmn:eventBasedGateway>
+    <bpmn:intermediateCatchEvent id="Event_ShipmentConfirmed" name="Shipment confirmed">
+      <bpmn:messageEventDefinition id="MsgDef_ShipmentConfirmed" messageRef="Message_ShipmentConfirmed" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="EndEvent_OrderShipped" name="Order shipped">
+    </bpmn:endEvent>
+    <bpmn:intermediateCatchEvent id="Event_ShipmentTimeout" name="No carrier after 1 hour">
+      <bpmn:timerEventDefinition id="TimerDef_ShipmentTimeout">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT1H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateThrowEvent id="Event_CompensateOrder" name="Undo payment and reservation">
+      <bpmn:documentation>COMPENSATION throw: runs the compensation handlers of every COMPLETED compensable activity in this scope (refund + release).</bpmn:documentation>
+      <bpmn:compensateEventDefinition id="CompDef_Order" waitForCompletion="true" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:sendTask id="Task_NotifyCancellation" name="Notify customer" camunda:class="com.academy.camunda.delegate.common.EmailNotificationDelegate">
+      <bpmn:extensionElements>
+        <camunda:field name="template">
+          <camunda:string>ORDER_CANCELLED</camunda:string>
+        </camunda:field>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndEvent_OrderCancelled" name="Order cancelled">
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_CompensatePayment" attachedToRef="Task_ChargePayment">
+      <bpmn:compensateEventDefinition id="CompDef_Pay" />
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Task_RefundPayment" name="Refund payment" isForCompensation="true" camunda:delegateExpression="${refundPaymentDelegate}">
+    </bpmn:serviceTask>
+    <bpmn:boundaryEvent id="Boundary_CompensateReservation" attachedToRef="Task_ReserveInventory">
+      <bpmn:compensateEventDefinition id="CompDef_Res" />
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Task_ReleaseInventory" name="Release inventory" isForCompensation="true" camunda:delegateExpression="${releaseInventoryDelegate}">
+    </bpmn:serviceTask>
+    <bpmn:boundaryEvent id="Boundary_PaymentDeclined" name="Payment declined" attachedToRef="Task_ChargePayment">
+      <bpmn:errorEventDefinition id="ErrorDef_Declined" errorRef="Error_PaymentDeclined" />
+    </bpmn:boundaryEvent>
+    <bpmn:sendTask id="Task_NotifyPaymentDeclined" name="Notify payment declined" camunda:class="com.academy.camunda.delegate.common.EmailNotificationDelegate">
+      <bpmn:extensionElements>
+        <camunda:field name="template">
+          <camunda:string>PAYMENT_DECLINED</camunda:string>
+        </camunda:field>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndEvent_PaymentDeclined" name="Payment declined">
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_OrderPlaced" targetRef="Task_PrepareOrder" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_PrepareOrder" targetRef="Task_CalculateDiscount" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Task_CalculateDiscount" targetRef="Task_CalculateShipping" />
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Task_CalculateShipping" targetRef="Task_CalculatePayable" />
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="Task_CalculatePayable" targetRef="Task_ChargePayment" />
+    <bpmn:sequenceFlow id="Flow_6" sourceRef="Task_ChargePayment" targetRef="Gateway_ForkFulfilment" />
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="Gateway_ForkFulfilment" targetRef="Task_ReserveInventory" />
+    <bpmn:sequenceFlow id="Flow_8" sourceRef="Gateway_ForkFulfilment" targetRef="Task_GenerateInvoice" />
+    <bpmn:sequenceFlow id="Flow_9" sourceRef="Task_ReserveInventory" targetRef="Gateway_JoinFulfilment" />
+    <bpmn:sequenceFlow id="Flow_10" sourceRef="Task_GenerateInvoice" targetRef="Gateway_JoinFulfilment" />
+    <bpmn:sequenceFlow id="Flow_11" sourceRef="Gateway_JoinFulfilment" targetRef="Task_RequestShipment" />
+    <bpmn:sequenceFlow id="Flow_12" sourceRef="Task_RequestShipment" targetRef="Gateway_WaitForShipment" />
+    <bpmn:sequenceFlow id="Flow_13" sourceRef="Gateway_WaitForShipment" targetRef="Event_ShipmentConfirmed" />
+    <bpmn:sequenceFlow id="Flow_14" sourceRef="Gateway_WaitForShipment" targetRef="Event_ShipmentTimeout" />
+    <bpmn:sequenceFlow id="Flow_15" sourceRef="Event_ShipmentConfirmed" targetRef="EndEvent_OrderShipped" />
+    <bpmn:sequenceFlow id="Flow_16" sourceRef="Event_ShipmentTimeout" targetRef="Event_CompensateOrder" />
+    <bpmn:sequenceFlow id="Flow_17" sourceRef="Event_CompensateOrder" targetRef="Task_NotifyCancellation" />
+    <bpmn:sequenceFlow id="Flow_18" sourceRef="Task_NotifyCancellation" targetRef="EndEvent_OrderCancelled" />
+    <bpmn:sequenceFlow id="Flow_19" sourceRef="Boundary_PaymentDeclined" targetRef="Task_NotifyPaymentDeclined" />
+    <bpmn:sequenceFlow id="Flow_20" sourceRef="Task_NotifyPaymentDeclined" targetRef="EndEvent_PaymentDeclined" />
+    <bpmn:association id="Association_Pay" associationDirection="One" sourceRef="Boundary_CompensatePayment" targetRef="Task_RefundPayment" />
+    <bpmn:association id="Association_Res" associationDirection="One" sourceRef="Boundary_CompensateReservation" targetRef="Task_ReleaseInventory" />
+  </bpmn:process>
+  <bpmn:message id="Message_OrderPlaced" name="OrderPlaced" />
+  <bpmn:message id="Message_ShipmentConfirmed" name="ShipmentConfirmed" />
+  <bpmn:error id="Error_PaymentDeclined" name="Payment declined" errorCode="PAYMENT_DECLINED" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_order-fulfillment">
+    <bpmndi:BPMNPlane id="BPMNPlane_order-fulfillment" bpmnElement="order-fulfillment">
+      <bpmndi:BPMNShape id="Shape_StartEvent_OrderPlaced" bpmnElement="StartEvent_OrderPlaced">
+        <dc:Bounds x="82" y="282" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_PrepareOrder" bpmnElement="Task_PrepareOrder">
+        <dc:Bounds x="180" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_CalculateDiscount" bpmnElement="Task_CalculateDiscount">
+        <dc:Bounds x="330" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_CalculateShipping" bpmnElement="Task_CalculateShipping">
+        <dc:Bounds x="480" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_CalculatePayable" bpmnElement="Task_CalculatePayable">
+        <dc:Bounds x="630" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_ChargePayment" bpmnElement="Task_ChargePayment">
+        <dc:Bounds x="780" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_ForkFulfilment" bpmnElement="Gateway_ForkFulfilment">
+        <dc:Bounds x="945" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_ReserveInventory" bpmnElement="Task_ReserveInventory">
+        <dc:Bounds x="1040" y="140" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_GenerateInvoice" bpmnElement="Task_GenerateInvoice">
+        <dc:Bounds x="1040" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_JoinFulfilment" bpmnElement="Gateway_JoinFulfilment">
+        <dc:Bounds x="1195" y="275" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_RequestShipment" bpmnElement="Task_RequestShipment">
+        <dc:Bounds x="1290" y="260" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_WaitForShipment" bpmnElement="Gateway_WaitForShipment">
+        <dc:Bounds x="1452" y="282" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Event_ShipmentConfirmed" bpmnElement="Event_ShipmentConfirmed">
+        <dc:Bounds x="1562" y="162" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_OrderShipped" bpmnElement="EndEvent_OrderShipped">
+        <dc:Bounds x="1682" y="162" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Event_ShipmentTimeout" bpmnElement="Event_ShipmentTimeout">
+        <dc:Bounds x="1562" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Event_CompensateOrder" bpmnElement="Event_CompensateOrder">
+        <dc:Bounds x="1682" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_NotifyCancellation" bpmnElement="Task_NotifyCancellation">
+        <dc:Bounds x="1780" y="380" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_OrderCancelled" bpmnElement="EndEvent_OrderCancelled">
+        <dc:Bounds x="1952" y="402" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_RefundPayment" bpmnElement="Task_RefundPayment">
+        <dc:Bounds x="780" y="100" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_ReleaseInventory" bpmnElement="Task_ReleaseInventory">
+        <dc:Bounds x="1040" y="0" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_NotifyPaymentDeclined" bpmnElement="Task_NotifyPaymentDeclined">
+        <dc:Bounds x="780" y="500" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_PaymentDeclined" bpmnElement="EndEvent_PaymentDeclined">
+        <dc:Bounds x="952" y="522" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_CompensatePayment" bpmnElement="Boundary_CompensatePayment">
+        <dc:Bounds x="812" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_CompensateReservation" bpmnElement="Boundary_CompensateReservation">
+        <dc:Bounds x="1072" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_PaymentDeclined" bpmnElement="Boundary_PaymentDeclined">
+        <dc:Bounds x="812" y="322" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Association_Pay" bpmnElement="Association_Pay">
+        <di:waypoint x="830" y="242" />
+        <di:waypoint x="830" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Association_Res" bpmnElement="Association_Res">
+        <di:waypoint x="1090" y="122" />
+        <di:waypoint x="1090" y="80" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_1" bpmnElement="Flow_1">
+        <di:waypoint x="118" y="300" />
+        <di:waypoint x="180" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_2" bpmnElement="Flow_2">
+        <di:waypoint x="280" y="300" />
+        <di:waypoint x="330" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_3" bpmnElement="Flow_3">
+        <di:waypoint x="430" y="300" />
+        <di:waypoint x="480" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_4" bpmnElement="Flow_4">
+        <di:waypoint x="580" y="300" />
+        <di:waypoint x="630" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_5" bpmnElement="Flow_5">
+        <di:waypoint x="730" y="300" />
+        <di:waypoint x="780" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_6" bpmnElement="Flow_6">
+        <di:waypoint x="880" y="300" />
+        <di:waypoint x="945" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_7" bpmnElement="Flow_7">
+        <di:waypoint x="970" y="275" />
+        <di:waypoint x="970" y="180" />
+        <di:waypoint x="1040" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_8" bpmnElement="Flow_8">
+        <di:waypoint x="970" y="325" />
+        <di:waypoint x="970" y="420" />
+        <di:waypoint x="1040" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_9" bpmnElement="Flow_9">
+        <di:waypoint x="1140" y="180" />
+        <di:waypoint x="1220" y="180" />
+        <di:waypoint x="1220" y="275" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_10" bpmnElement="Flow_10">
+        <di:waypoint x="1140" y="420" />
+        <di:waypoint x="1220" y="420" />
+        <di:waypoint x="1220" y="325" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_11" bpmnElement="Flow_11">
+        <di:waypoint x="1245" y="300" />
+        <di:waypoint x="1290" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_12" bpmnElement="Flow_12">
+        <di:waypoint x="1390" y="300" />
+        <di:waypoint x="1452" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_13" bpmnElement="Flow_13">
+        <di:waypoint x="1488" y="300" />
+        <di:waypoint x="1525" y="300" />
+        <di:waypoint x="1525" y="180" />
+        <di:waypoint x="1562" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_14" bpmnElement="Flow_14">
+        <di:waypoint x="1488" y="300" />
+        <di:waypoint x="1525" y="300" />
+        <di:waypoint x="1525" y="420" />
+        <di:waypoint x="1562" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_15" bpmnElement="Flow_15">
+        <di:waypoint x="1598" y="180" />
+        <di:waypoint x="1682" y="180" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_16" bpmnElement="Flow_16">
+        <di:waypoint x="1598" y="420" />
+        <di:waypoint x="1682" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_17" bpmnElement="Flow_17">
+        <di:waypoint x="1718" y="420" />
+        <di:waypoint x="1780" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_18" bpmnElement="Flow_18">
+        <di:waypoint x="1880" y="420" />
+        <di:waypoint x="1952" y="420" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_19" bpmnElement="Flow_19">
+        <di:waypoint x="830" y="358" />
+        <di:waypoint x="830" y="500" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_20" bpmnElement="Flow_20">
+        <di:waypoint x="880" y="540" />
+        <di:waypoint x="952" y="540" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

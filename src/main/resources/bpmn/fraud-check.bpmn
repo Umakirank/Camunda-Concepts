@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  SUPPORTING PROCESS 4: FRAUD CHECK                         key: fraud-check
+  Called by insurance-claim.bpmn (Call Activity "Fraud check")
+  =============================================================================
+  Concepts covered
+    * A reusable process started by a call activity (own instance, own history)
+    * DMN COLLECT SUM scorecard
+    * Exclusive gateway with default flow
+    * Escalation intermediate THROW event (caught by the parent's boundary event)
+    * Error END event (caught by the parent's error boundary event)
+  The error and escalation CODES (FRAUD_CONFIRMED / FRAUD_SUSPECTED) must match
+  the codes declared in the parent model - that is how the engine links them.
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_FraudCheck" targetNamespace="http://academy.com/bpmn"
+                  exporter="Camunda Modeler" exporterVersion="5.40.0"
+                  modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+  <bpmn:process id="fraud-check" name="Fraud Check" isExecutable="true" camunda:historyTimeToLive="P30D" camunda:versionTag="1.0">
+    <bpmn:documentation>Reusable sub-process: DMN scorecard, optional human investigation, error/escalation back to the caller.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_FraudCheck" name="Fraud check requested">
+    </bpmn:startEvent>
+    <bpmn:businessRuleTask id="Task_ScoreFraudRisk" name="Score fraud risk" camunda:decisionRef="fraud-risk-score" camunda:mapDecisionResult="singleEntry" camunda:resultVariable="fraudScore">
+      <bpmn:documentation>DMN COLLECT + SUM scorecard.</bpmn:documentation>
+    </bpmn:businessRuleTask>
+    <bpmn:exclusiveGateway id="Gateway_ScoreHigh" name="Score &gt;= 70?" default="Flow_LowScore">
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="UserTask_InvestigateFraud" name="Investigate fraud" camunda:candidateGroups="fraud-investigators">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="claimId" label="Claim" type="string">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="fraudScore" label="Fraud score" type="long">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="investigationOutcome" label="Outcome" type="enum">
+            <camunda:value id="CLEAR" name="CLEAR" />
+            <camunda:value id="SUSPECTED" name="SUSPECTED" />
+            <camunda:value id="CONFIRMED" name="CONFIRMED" />
+          </camunda:formField>
+        </camunda:formData>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_Outcome" name="Outcome?" default="Flow_Clear">
+    </bpmn:exclusiveGateway>
+    <bpmn:endEvent id="EndEvent_FraudConfirmed" name="Fraud confirmed">
+      <bpmn:documentation>ERROR end event: ends this instance and throws FRAUD_CONFIRMED to the calling activity.</bpmn:documentation>
+      <bpmn:errorEventDefinition id="ErrorDef_FraudEnd" errorRef="Error_FraudConfirmed" />
+    </bpmn:endEvent>
+    <bpmn:intermediateThrowEvent id="Event_EscalateSuspicion" name="Escalate suspicion">
+      <bpmn:documentation>ESCALATION throw: unlike an error it does not have to end anything - the caller decides (non-interrupting boundary).</bpmn:documentation>
+      <bpmn:escalationEventDefinition id="EscDef_Throw" escalationRef="Escalation_FraudSuspected" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:exclusiveGateway id="Gateway_MergeCleared">
+    </bpmn:exclusiveGateway>
+    <bpmn:endEvent id="EndEvent_FraudCheckDone" name="Fraud check completed">
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_FraudCheck" targetRef="Task_ScoreFraudRisk" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_ScoreFraudRisk" targetRef="Gateway_ScoreHigh" />
+    <bpmn:sequenceFlow id="Flow_HighScore" name="yes" sourceRef="Gateway_ScoreHigh" targetRef="UserTask_InvestigateFraud">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${fraudScore &gt;= 70}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_LowScore" name="no" sourceRef="Gateway_ScoreHigh" targetRef="Gateway_MergeCleared" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="UserTask_InvestigateFraud" targetRef="Gateway_Outcome" />
+    <bpmn:sequenceFlow id="Flow_Confirmed" name="CONFIRMED" sourceRef="Gateway_Outcome" targetRef="EndEvent_FraudConfirmed">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${investigationOutcome == 'CONFIRMED'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Suspected" name="SUSPECTED" sourceRef="Gateway_Outcome" targetRef="Event_EscalateSuspicion">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${investigationOutcome == 'SUSPECTED'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_Clear" name="CLEAR" sourceRef="Gateway_Outcome" targetRef="Gateway_MergeCleared" />
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Event_EscalateSuspicion" targetRef="Gateway_MergeCleared" />
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="Gateway_MergeCleared" targetRef="EndEvent_FraudCheckDone" />
+  </bpmn:process>
+  <bpmn:error id="Error_FraudConfirmed" name="Fraud confirmed" errorCode="FRAUD_CONFIRMED" />
+  <bpmn:escalation id="Escalation_FraudSuspected" name="Fraud suspected" escalationCode="FRAUD_SUSPECTED" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_fraud-check">
+    <bpmndi:BPMNPlane id="BPMNPlane_fraud-check" bpmnElement="fraud-check">
+      <bpmndi:BPMNShape id="Shape_StartEvent_FraudCheck" bpmnElement="StartEvent_FraudCheck">
+        <dc:Bounds x="82" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_ScoreFraudRisk" bpmnElement="Task_ScoreFraudRisk">
+        <dc:Bounds x="180" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_ScoreHigh" bpmnElement="Gateway_ScoreHigh">
+        <dc:Bounds x="345" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_UserTask_InvestigateFraud" bpmnElement="UserTask_InvestigateFraud">
+        <dc:Bounds x="460" y="160" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_Outcome" bpmnElement="Gateway_Outcome">
+        <dc:Bounds x="625" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_FraudConfirmed" bpmnElement="EndEvent_FraudConfirmed">
+        <dc:Bounds x="742" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Event_EscalateSuspicion" bpmnElement="Event_EscalateSuspicion">
+        <dc:Bounds x="742" y="302" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_MergeCleared" bpmnElement="Gateway_MergeCleared">
+        <dc:Bounds x="855" y="175" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_FraudCheckDone" bpmnElement="EndEvent_FraudCheckDone">
+        <dc:Bounds x="962" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Flow_1" bpmnElement="Flow_1">
+        <di:waypoint x="118" y="200" />
+        <di:waypoint x="180" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_2" bpmnElement="Flow_2">
+        <di:waypoint x="280" y="200" />
+        <di:waypoint x="345" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_HighScore" bpmnElement="Flow_HighScore">
+        <di:waypoint x="395" y="200" />
+        <di:waypoint x="460" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_LowScore" bpmnElement="Flow_LowScore">
+        <di:waypoint x="370" y="175" />
+        <di:waypoint x="370" y="60" />
+        <di:waypoint x="880" y="60" />
+        <di:waypoint x="880" y="175" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_3" bpmnElement="Flow_3">
+        <di:waypoint x="560" y="200" />
+        <di:waypoint x="625" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_Confirmed" bpmnElement="Flow_Confirmed">
+        <di:waypoint x="650" y="175" />
+        <di:waypoint x="650" y="120" />
+        <di:waypoint x="742" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_Suspected" bpmnElement="Flow_Suspected">
+        <di:waypoint x="650" y="225" />
+        <di:waypoint x="650" y="320" />
+        <di:waypoint x="742" y="320" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_Clear" bpmnElement="Flow_Clear">
+        <di:waypoint x="675" y="200" />
+        <di:waypoint x="855" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_4" bpmnElement="Flow_4">
+        <di:waypoint x="778" y="320" />
+        <di:waypoint x="880" y="320" />
+        <di:waypoint x="880" y="225" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_5" bpmnElement="Flow_5">
+        <di:waypoint x="905" y="200" />
+        <di:waypoint x="962" y="200" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

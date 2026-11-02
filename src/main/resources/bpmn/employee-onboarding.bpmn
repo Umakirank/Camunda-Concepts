@@ -1,0 +1,312 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  PROCESS 5: EMPLOYEE ONBOARDING  (Human Resources)    key: employee-onboarding
+  =============================================================================
+  Business story
+    When a candidate accepts an offer, HR, IT and the manager work in parallel.
+    IT provisions every piece of equipment one by one and creates accounts.
+    Personal data may change at any time (non-interrupting event sub-process),
+    and the candidate may withdraw (interrupting event sub-process). At the
+    end a SIGNAL announces the new joiner to anyone interested.
+
+  Concepts covered
+    * Embedded sub-process (scope), parallel gateway with 3 branches
+    * Sequential multi-instance service task (collection + elementVariable + loopCounter)
+    * Manual task
+    * User task assigned via expression (camunda:assignee="${managerId}")
+    * Event sub-processes: non-interrupting message start, interrupting message start
+    * Signal intermediate THROW with variable payload (camunda:in)
+    * Form field types: string, enum, date, boolean + default value
+  Try it
+    POST /api/messages/EmployeeDetailsUpdated?businessKey=EMP-...
+    POST /api/messages/OnboardingCancelled?businessKey=EMP-...
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_EmployeeOnboarding" targetNamespace="http://academy.com/bpmn"
+                  exporter="Camunda Modeler" exporterVersion="5.40.0"
+                  modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+  <bpmn:process id="employee-onboarding" name="Employee Onboarding" isExecutable="true" camunda:historyTimeToLive="P30D" camunda:versionTag="1.0">
+    <bpmn:documentation>New joiner onboarding with an embedded IT sub-process, event sub-processes and a broadcast signal.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_NewHire" name="Offer accepted" camunda:initiator="initiator">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="employeeName" label="Employee name" type="string">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="employeeEmail" label="E-mail" type="string" />
+          <camunda:formField id="department" label="Department" type="enum">
+            <camunda:value id="ENGINEERING" name="ENGINEERING" />
+            <camunda:value id="SALES" name="SALES" />
+            <camunda:value id="HR" name="HR" />
+          </camunda:formField>
+          <camunda:formField id="startDate" label="Start date" type="date" />
+          <camunda:formField id="managerId" label="Manager user id" type="string" defaultValue="priya" />
+        </camunda:formData>
+      </bpmn:extensionElements>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Task_CreateEmployeeRecord" name="Create employee record" camunda:delegateExpression="${createEmployeeRecordDelegate}">
+      <bpmn:documentation>Creates employeeId and the 'equipmentList' collection used by the multi-instance task.</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:parallelGateway id="Gateway_ForkOnboarding">
+    </bpmn:parallelGateway>
+    <bpmn:subProcess id="SubProcess_ITSetup" name="IT setup">
+      <bpmn:documentation>EMBEDDED sub-process: a scope inside the same process instance (shares variables, can have its own boundary events).</bpmn:documentation>
+      <bpmn:startEvent id="StartEvent_ITSetup">
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="Task_ProvisionEquipment" name="Provision equipment" camunda:delegateExpression="${provisionEquipmentDelegate}">
+        <bpmn:documentation>SEQUENTIAL multi-instance: one execution after the other, one per item of equipmentList.</bpmn:documentation>
+        <bpmn:multiInstanceLoopCharacteristics isSequential="true" camunda:collection="${equipmentList}" camunda:elementVariable="equipmentItem" />
+      </bpmn:serviceTask>
+      <bpmn:userTask id="UserTask_CreateAccounts" name="Create IT accounts" camunda:candidateGroups="it-team">
+        <bpmn:extensionElements>
+          <camunda:formData>
+            <camunda:formField id="employeeName" label="Employee" type="string">
+              <camunda:validation>
+                <camunda:constraint name="readonly" />
+              </camunda:validation>
+            </camunda:formField>
+            <camunda:formField id="corporateEmail" label="Corporate e-mail" type="string">
+              <camunda:validation>
+                <camunda:constraint name="required" />
+              </camunda:validation>
+            </camunda:formField>
+          </camunda:formData>
+        </bpmn:extensionElements>
+      </bpmn:userTask>
+      <bpmn:endEvent id="EndEvent_ITSetup">
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_IT1" sourceRef="StartEvent_ITSetup" targetRef="Task_ProvisionEquipment" />
+      <bpmn:sequenceFlow id="Flow_IT2" sourceRef="Task_ProvisionEquipment" targetRef="UserTask_CreateAccounts" />
+      <bpmn:sequenceFlow id="Flow_IT3" sourceRef="UserTask_CreateAccounts" targetRef="EndEvent_ITSetup" />
+    </bpmn:subProcess>
+    <bpmn:userTask id="UserTask_HrPaperwork" name="Complete HR paperwork" camunda:candidateGroups="hr">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="employeeName" label="Employee" type="string">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="contractSigned" label="Contract signed?" type="boolean">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+        </camunda:formData>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:manualTask id="ManualTask_WelcomeKit" name="Hand over welcome kit">
+      <bpmn:documentation>MANUAL task: done outside any system. The engine just passes through (documentation only).</bpmn:documentation>
+    </bpmn:manualTask>
+    <bpmn:parallelGateway id="Gateway_JoinOnboarding">
+    </bpmn:parallelGateway>
+    <bpmn:userTask id="UserTask_ManagerIntro" name="Manager introduction meeting" camunda:assignee="${managerId}">
+    </bpmn:userTask>
+    <bpmn:intermediateThrowEvent id="Event_EmployeeOnboarded" name="Broadcast: employee onboarded">
+      <bpmn:documentation>SIGNAL throw: broadcast to EVERY subscriber (here: the signal start event of team-announcement). Passes 2 variables.</bpmn:documentation>
+      <bpmn:signalEventDefinition id="SignalDef_Throw" signalRef="Signal_EmployeeOnboarded">
+        <bpmn:extensionElements>
+          <camunda:in source="employeeName" target="employeeName" />
+          <camunda:in source="department" target="department" />
+        </bpmn:extensionElements>
+      </bpmn:signalEventDefinition>
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="EndEvent_Onboarded" name="Employee onboarded">
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_NewHire" targetRef="Task_CreateEmployeeRecord" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_CreateEmployeeRecord" targetRef="Gateway_ForkOnboarding" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Gateway_ForkOnboarding" targetRef="SubProcess_ITSetup" />
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Gateway_ForkOnboarding" targetRef="UserTask_HrPaperwork" />
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="Gateway_ForkOnboarding" targetRef="ManualTask_WelcomeKit" />
+    <bpmn:sequenceFlow id="Flow_6" sourceRef="SubProcess_ITSetup" targetRef="Gateway_JoinOnboarding" />
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="UserTask_HrPaperwork" targetRef="Gateway_JoinOnboarding" />
+    <bpmn:sequenceFlow id="Flow_8" sourceRef="ManualTask_WelcomeKit" targetRef="Gateway_JoinOnboarding" />
+    <bpmn:sequenceFlow id="Flow_9" sourceRef="Gateway_JoinOnboarding" targetRef="UserTask_ManagerIntro" />
+    <bpmn:sequenceFlow id="Flow_10" sourceRef="UserTask_ManagerIntro" targetRef="Event_EmployeeOnboarded" />
+    <bpmn:sequenceFlow id="Flow_11" sourceRef="Event_EmployeeOnboarded" targetRef="EndEvent_Onboarded" />
+    <bpmn:subProcess id="EventSubProcess_DetailsUpdated" name="Employee details updated" triggeredByEvent="true">
+      <bpmn:documentation>NON-interrupting EVENT sub-process: may fire any number of times while the instance runs; main flow continues.</bpmn:documentation>
+      <bpmn:startEvent id="StartEvent_DetailsUpdated" name="Details updated" isInterrupting="false">
+        <bpmn:messageEventDefinition id="MsgDef_Details" messageRef="Message_EmployeeDetailsUpdated" />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="Task_UpdateHrRecords" name="Update HR records" camunda:delegateExpression="${updateHrRecordsDelegate}">
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="EndEvent_DetailsUpdated">
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_E1" sourceRef="StartEvent_DetailsUpdated" targetRef="Task_UpdateHrRecords" />
+      <bpmn:sequenceFlow id="Flow_E2" sourceRef="Task_UpdateHrRecords" targetRef="EndEvent_DetailsUpdated" />
+    </bpmn:subProcess>
+    <bpmn:subProcess id="EventSubProcess_Cancelled" name="Onboarding cancelled" triggeredByEvent="true">
+      <bpmn:documentation>INTERRUPTING EVENT sub-process: cancels everything that is running in the parent scope, then runs its own flow.</bpmn:documentation>
+      <bpmn:startEvent id="StartEvent_Cancelled" name="Candidate withdrew">
+        <bpmn:messageEventDefinition id="MsgDef_Cancel" messageRef="Message_OnboardingCancelled" />
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="Task_RevokeAccess" name="Revoke access &amp; equipment" camunda:delegateExpression="${revokeAccessDelegate}">
+      </bpmn:serviceTask>
+      <bpmn:endEvent id="EndEvent_Cancelled" name="Onboarding cancelled">
+      </bpmn:endEvent>
+      <bpmn:sequenceFlow id="Flow_C1" sourceRef="StartEvent_Cancelled" targetRef="Task_RevokeAccess" />
+      <bpmn:sequenceFlow id="Flow_C2" sourceRef="Task_RevokeAccess" targetRef="EndEvent_Cancelled" />
+    </bpmn:subProcess>
+  </bpmn:process>
+  <bpmn:message id="Message_EmployeeDetailsUpdated" name="EmployeeDetailsUpdated" />
+  <bpmn:message id="Message_OnboardingCancelled" name="OnboardingCancelled" />
+  <bpmn:signal id="Signal_EmployeeOnboarded" name="EmployeeOnboarded" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_employee-onboarding">
+    <bpmndi:BPMNPlane id="BPMNPlane_employee-onboarding" bpmnElement="employee-onboarding">
+      <bpmndi:BPMNShape id="Shape_StartEvent_NewHire" bpmnElement="StartEvent_NewHire">
+        <dc:Bounds x="82" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_CreateEmployeeRecord" bpmnElement="Task_CreateEmployeeRecord">
+        <dc:Bounds x="180" y="220" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_ForkOnboarding" bpmnElement="Gateway_ForkOnboarding">
+        <dc:Bounds x="335" y="235" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_SubProcess_ITSetup" bpmnElement="SubProcess_ITSetup" isExpanded="true">
+        <dc:Bounds x="430" y="80" width="470" height="170" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_StartEvent_ITSetup" bpmnElement="StartEvent_ITSetup">
+        <dc:Bounds x="452" y="147" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_ProvisionEquipment" bpmnElement="Task_ProvisionEquipment">
+        <dc:Bounds x="530" y="125" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_UserTask_CreateAccounts" bpmnElement="UserTask_CreateAccounts">
+        <dc:Bounds x="680" y="125" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_ITSetup" bpmnElement="EndEvent_ITSetup">
+        <dc:Bounds x="832" y="147" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_UserTask_HrPaperwork" bpmnElement="UserTask_HrPaperwork">
+        <dc:Bounds x="615" y="290" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ManualTask_WelcomeKit" bpmnElement="ManualTask_WelcomeKit">
+        <dc:Bounds x="615" y="400" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_JoinOnboarding" bpmnElement="Gateway_JoinOnboarding">
+        <dc:Bounds x="935" y="235" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_UserTask_ManagerIntro" bpmnElement="UserTask_ManagerIntro">
+        <dc:Bounds x="1030" y="220" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Event_EmployeeOnboarded" bpmnElement="Event_EmployeeOnboarded">
+        <dc:Bounds x="1192" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_Onboarded" bpmnElement="EndEvent_Onboarded">
+        <dc:Bounds x="1302" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EventSubProcess_DetailsUpdated" bpmnElement="EventSubProcess_DetailsUpdated" isExpanded="true">
+        <dc:Bounds x="430" y="540" width="360" height="150" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_StartEvent_DetailsUpdated" bpmnElement="StartEvent_DetailsUpdated">
+        <dc:Bounds x="462" y="597" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_UpdateHrRecords" bpmnElement="Task_UpdateHrRecords">
+        <dc:Bounds x="560" y="575" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_DetailsUpdated" bpmnElement="EndEvent_DetailsUpdated">
+        <dc:Bounds x="722" y="597" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EventSubProcess_Cancelled" bpmnElement="EventSubProcess_Cancelled" isExpanded="true">
+        <dc:Bounds x="830" y="540" width="360" height="150" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_StartEvent_Cancelled" bpmnElement="StartEvent_Cancelled">
+        <dc:Bounds x="862" y="597" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_RevokeAccess" bpmnElement="Task_RevokeAccess">
+        <dc:Bounds x="960" y="575" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_Cancelled" bpmnElement="EndEvent_Cancelled">
+        <dc:Bounds x="1122" y="597" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Flow_IT1" bpmnElement="Flow_IT1">
+        <di:waypoint x="488" y="165" />
+        <di:waypoint x="530" y="165" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_IT2" bpmnElement="Flow_IT2">
+        <di:waypoint x="630" y="165" />
+        <di:waypoint x="680" y="165" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_IT3" bpmnElement="Flow_IT3">
+        <di:waypoint x="780" y="165" />
+        <di:waypoint x="832" y="165" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_1" bpmnElement="Flow_1">
+        <di:waypoint x="118" y="260" />
+        <di:waypoint x="180" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_2" bpmnElement="Flow_2">
+        <di:waypoint x="280" y="260" />
+        <di:waypoint x="335" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_3" bpmnElement="Flow_3">
+        <di:waypoint x="360" y="235" />
+        <di:waypoint x="360" y="165" />
+        <di:waypoint x="430" y="165" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_4" bpmnElement="Flow_4">
+        <di:waypoint x="360" y="285" />
+        <di:waypoint x="360" y="330" />
+        <di:waypoint x="615" y="330" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_5" bpmnElement="Flow_5">
+        <di:waypoint x="360" y="285" />
+        <di:waypoint x="360" y="440" />
+        <di:waypoint x="615" y="440" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_6" bpmnElement="Flow_6">
+        <di:waypoint x="900" y="165" />
+        <di:waypoint x="960" y="165" />
+        <di:waypoint x="960" y="235" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_7" bpmnElement="Flow_7">
+        <di:waypoint x="715" y="330" />
+        <di:waypoint x="960" y="330" />
+        <di:waypoint x="960" y="285" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_8" bpmnElement="Flow_8">
+        <di:waypoint x="715" y="440" />
+        <di:waypoint x="960" y="440" />
+        <di:waypoint x="960" y="285" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_9" bpmnElement="Flow_9">
+        <di:waypoint x="985" y="260" />
+        <di:waypoint x="1030" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_10" bpmnElement="Flow_10">
+        <di:waypoint x="1130" y="260" />
+        <di:waypoint x="1192" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_11" bpmnElement="Flow_11">
+        <di:waypoint x="1228" y="260" />
+        <di:waypoint x="1302" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_E1" bpmnElement="Flow_E1">
+        <di:waypoint x="498" y="615" />
+        <di:waypoint x="560" y="615" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_E2" bpmnElement="Flow_E2">
+        <di:waypoint x="660" y="615" />
+        <di:waypoint x="722" y="615" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_C1" bpmnElement="Flow_C1">
+        <di:waypoint x="898" y="615" />
+        <di:waypoint x="960" y="615" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_C2" bpmnElement="Flow_C2">
+        <di:waypoint x="1060" y="615" />
+        <di:waypoint x="1122" y="615" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

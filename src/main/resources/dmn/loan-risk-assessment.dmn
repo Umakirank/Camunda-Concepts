@@ -1,0 +1,102 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  DMN 1: LOAN RISK ASSESSMENT                         Hit policy: UNIQUE (U)
+  Used by: loan-approval.bpmn -> Business Rule Task "Assess credit risk"
+  =============================================================================
+  UNIQUE means: for any input, AT MOST ONE rule may match. If two rules match
+  the engine throws DMN-03001 "Hit policy 'UNIQUE' only allows a single rule to
+  match" and the business rule task fails (incident / exception). That makes
+  UNIQUE the safest policy for regulated decisions: overlaps are bugs, and
+  the engine refuses to guess.
+
+  Inputs
+    1. creditScore            (integer)  e.g. 300..900 from the credit bureau
+    2. loanAmount / annualIncome  (double) -> a FEEL *input expression*.
+       The input column does not have to be a raw variable; it can be any FEEL
+       expression evaluated against the variables passed in.
+  Outputs (two columns -> the result is a MAP {riskLevel, riskReason})
+    riskLevel   LOW | MEDIUM | HIGH
+    riskReason  human readable explanation (shown to the underwriter)
+
+  How the rules are designed to never overlap (completeness + exclusivity):
+      creditScore  <600        [600..749]          >=750
+      ratio        any         <=0.5  | >0.5       <=0.8 | >0.8
+  Every (score, ratio) pair lands in exactly one cell -> UNIQUE is satisfied.
+
+  FEEL unary-test syntax used in the input entries
+    < 600            less than
+    [600..749]       closed interval, both ends included
+    >= 750           greater or equal
+    -                "any value" (the cell is empty in Camunda Modeler)
+  Output entries are FEEL expressions: strings MUST be quoted: "LOW".
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:camunda="http://camunda.org/schema/1.0/dmn"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_LoanRisk" name="Loan Risk Assessment"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             exporter="Camunda Modeler" exporterVersion="5.40.0"
+             modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+
+  <decision id="loan-risk-assessment" name="Loan Risk Assessment" camunda:historyTimeToLive="P30D">
+    <description>Classifies a loan application as LOW, MEDIUM or HIGH risk.</description>
+    <decisionTable id="DecisionTable_loan-risk-assessment" hitPolicy="UNIQUE">
+      <input id="Input_loan-risk-assessment_1" label="Credit score">
+        <inputExpression id="InputExpression_loan-risk-assessment_1" typeRef="integer">
+          <text>creditScore</text>
+        </inputExpression>
+      </input>
+      <input id="Input_loan-risk-assessment_2" label="Loan-to-income ratio">
+        <inputExpression id="InputExpression_loan-risk-assessment_2" typeRef="double">
+          <text>loanAmount / annualIncome</text>
+        </inputExpression>
+      </input>
+      <output id="Output_loan-risk-assessment_1" label="Risk level" name="riskLevel" typeRef="string" />
+      <output id="Output_loan-risk-assessment_2" label="Risk reason" name="riskReason" typeRef="string" />
+      <rule id="Rule_loan-risk-assessment_1">
+        <description>Poor credit history: always high risk</description>
+        <inputEntry id="InputEntry_loan-risk-assessment_1_1"><text>&lt; 600</text></inputEntry>
+        <inputEntry id="InputEntry_loan-risk-assessment_1_2"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_1_1"><text>"HIGH"</text></outputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_1_2"><text>"Credit score below 600"</text></outputEntry>
+      </rule>
+      <rule id="Rule_loan-risk-assessment_2">
+        <inputEntry id="InputEntry_loan-risk-assessment_2_1"><text>[600..749]</text></inputEntry>
+        <inputEntry id="InputEntry_loan-risk-assessment_2_2"><text>&gt; 0.5</text></inputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_2_1"><text>"HIGH"</text></outputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_2_2"><text>"Average score and loan above 50% of income"</text></outputEntry>
+      </rule>
+      <rule id="Rule_loan-risk-assessment_3">
+        <description>Goes to manual underwriting</description>
+        <inputEntry id="InputEntry_loan-risk-assessment_3_1"><text>[600..749]</text></inputEntry>
+        <inputEntry id="InputEntry_loan-risk-assessment_3_2"><text>&lt;= 0.5</text></inputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_3_1"><text>"MEDIUM"</text></outputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_3_2"><text>"Average score, affordable loan"</text></outputEntry>
+      </rule>
+      <rule id="Rule_loan-risk-assessment_4">
+        <inputEntry id="InputEntry_loan-risk-assessment_4_1"><text>&gt;= 750</text></inputEntry>
+        <inputEntry id="InputEntry_loan-risk-assessment_4_2"><text>&gt; 0.8</text></inputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_4_1"><text>"MEDIUM"</text></outputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_4_2"><text>"Excellent score but loan above 80% of income"</text></outputEntry>
+      </rule>
+      <rule id="Rule_loan-risk-assessment_5">
+        <description>Straight-through processing (auto approval)</description>
+        <inputEntry id="InputEntry_loan-risk-assessment_5_1"><text>&gt;= 750</text></inputEntry>
+        <inputEntry id="InputEntry_loan-risk-assessment_5_2"><text>&lt;= 0.8</text></inputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_5_1"><text>"LOW"</text></outputEntry>
+        <outputEntry id="OutputEntry_loan-risk-assessment_5_2"><text>"Excellent score, affordable loan"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_Definitions_LoanRisk">
+      <dmndi:DMNShape id="DMNShape_loan-risk-assessment" dmnElementRef="loan-risk-assessment">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

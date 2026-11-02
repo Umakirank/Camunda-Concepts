@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  DMN 2: ORDER PRICING          Hit policies: COLLECT MAX (C>) and COLLECT MIN (C<)
+  Used by: order-fulfillment.bpmn -> two Business Rule Tasks
+  =============================================================================
+  COLLECT (C) = "evaluate ALL rules, collect the outputs of every matching rule".
+  An optional AGGREGATOR then reduces the collected values to ONE number:
+      C+  SUM    C<  MIN    C>  MAX    C#  COUNT
+  Rules of aggregation in Camunda 7:
+    * Exactly ONE output column is allowed when an aggregator is used.
+    * SUM/MIN/MAX need numeric outputs (integer, long, double).
+    * If no rule matches, the result is EMPTY (null single entry). That is why
+      both tables end with a "catch-all" rule (all inputs "-").
+
+  Decision "order-discount" (COLLECT MAX)
+    Business rule: "Customers get the BEST single discount they qualify for -
+    discounts never stack." Several rules can match (a GOLD customer using a
+    coupon on a big order matches 3 rules); MAX picks the highest percentage.
+    Rule order is irrelevant for COLLECT, which makes tables easy to extend.
+
+  Decision "shipping-fee" (COLLECT MIN)
+    Business rule: "Several carriers can ship the parcel; charge the cheapest."
+    Each rule is one carrier offer; MIN returns the cheapest applicable fee.
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:camunda="http://camunda.org/schema/1.0/dmn"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_OrderPricing" name="Order Pricing"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             exporter="Camunda Modeler" exporterVersion="5.40.0"
+             modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+
+  <decision id="order-discount" name="Order Discount" camunda:historyTimeToLive="P30D">
+    <description>Best (maximum) discount percentage a customer qualifies for.</description>
+    <decisionTable id="DecisionTable_order-discount" hitPolicy="COLLECT" aggregation="MAX">
+      <input id="Input_order-discount_1" label="Customer type">
+        <inputExpression id="InputExpression_order-discount_1" typeRef="string">
+          <text>customerType</text>
+        </inputExpression>
+      </input>
+      <input id="Input_order-discount_2" label="Order total (INR)">
+        <inputExpression id="InputExpression_order-discount_2" typeRef="double">
+          <text>orderTotal</text>
+        </inputExpression>
+      </input>
+      <input id="Input_order-discount_3" label="Coupon code">
+        <inputExpression id="InputExpression_order-discount_3" typeRef="string">
+          <text>couponCode</text>
+        </inputExpression>
+      </input>
+      <output id="Output_order-discount_1" label="Discount %" name="discountPercent" typeRef="integer" />
+      <rule id="Rule_order-discount_1">
+        <description>Baseline: guarantees a result even if nothing else matches</description>
+        <inputEntry id="InputEntry_order-discount_1_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_1_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_1_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_order-discount_1_1"><text>0</text></outputEntry>
+      </rule>
+      <rule id="Rule_order-discount_2">
+        <inputEntry id="InputEntry_order-discount_2_1"><text>"SILVER"</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_2_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_2_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_order-discount_2_1"><text>5</text></outputEntry>
+      </rule>
+      <rule id="Rule_order-discount_3">
+        <inputEntry id="InputEntry_order-discount_3_1"><text>"GOLD"</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_3_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_3_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_order-discount_3_1"><text>10</text></outputEntry>
+      </rule>
+      <rule id="Rule_order-discount_4">
+        <description>Big basket discount</description>
+        <inputEntry id="InputEntry_order-discount_4_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_4_2"><text>&gt;= 5000</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_4_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_order-discount_4_1"><text>7</text></outputEntry>
+      </rule>
+      <rule id="Rule_order-discount_5">
+        <description>Very big basket discount</description>
+        <inputEntry id="InputEntry_order-discount_5_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_5_2"><text>&gt;= 20000</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_5_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_order-discount_5_1"><text>12</text></outputEntry>
+      </rule>
+      <rule id="Rule_order-discount_6">
+        <description>Festival coupon</description>
+        <inputEntry id="InputEntry_order-discount_6_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_6_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_order-discount_6_3"><text>"FESTIVE20"</text></inputEntry>
+        <outputEntry id="OutputEntry_order-discount_6_1"><text>20</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <decision id="shipping-fee" name="Shipping Fee" camunda:historyTimeToLive="P30D">
+    <description>Cheapest carrier fee for the destination zone and parcel weight.</description>
+    <decisionTable id="DecisionTable_shipping-fee" hitPolicy="COLLECT" aggregation="MIN">
+      <input id="Input_shipping-fee_1" label="Destination zone">
+        <inputExpression id="InputExpression_shipping-fee_1" typeRef="string">
+          <text>destinationZone</text>
+        </inputExpression>
+      </input>
+      <input id="Input_shipping-fee_2" label="Total weight (kg)">
+        <inputExpression id="InputExpression_shipping-fee_2" typeRef="double">
+          <text>weightKg</text>
+        </inputExpression>
+      </input>
+      <output id="Output_shipping-fee_1" label="Shipping fee (INR)" name="shippingFee" typeRef="double" />
+      <rule id="Rule_shipping-fee_1">
+        <description>National courier: ships everywhere, flat fee</description>
+        <inputEntry id="InputEntry_shipping-fee_1_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_shipping-fee_1_2"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_shipping-fee_1_1"><text>250</text></outputEntry>
+      </rule>
+      <rule id="Rule_shipping-fee_2">
+        <description>Metro same-day partner, light parcels</description>
+        <inputEntry id="InputEntry_shipping-fee_2_1"><text>"METRO"</text></inputEntry>
+        <inputEntry id="InputEntry_shipping-fee_2_2"><text>&lt;= 5</text></inputEntry>
+        <outputEntry id="OutputEntry_shipping-fee_2_1"><text>60</text></outputEntry>
+      </rule>
+      <rule id="Rule_shipping-fee_3">
+        <description>Regional partner</description>
+        <inputEntry id="InputEntry_shipping-fee_3_1"><text>"METRO","URBAN"</text></inputEntry>
+        <inputEntry id="InputEntry_shipping-fee_3_2"><text>&lt;= 20</text></inputEntry>
+        <outputEntry id="OutputEntry_shipping-fee_3_1"><text>120</text></outputEntry>
+      </rule>
+      <rule id="Rule_shipping-fee_4">
+        <description>Remote areas surcharge carrier</description>
+        <inputEntry id="InputEntry_shipping-fee_4_1"><text>"REMOTE"</text></inputEntry>
+        <inputEntry id="InputEntry_shipping-fee_4_2"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_shipping-fee_4_1"><text>400</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_Definitions_OrderPricing">
+      <dmndi:DMNShape id="DMNShape_order-discount" dmnElementRef="order-discount">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_shipping-fee" dmnElementRef="shipping-fee">
+        <dc:Bounds height="80" width="180" x="420" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

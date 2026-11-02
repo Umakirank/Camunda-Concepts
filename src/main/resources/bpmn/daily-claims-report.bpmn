@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  SUPPORTING PROCESS: DAILY CLAIMS REPORT              key: daily-claims-report
+  =============================================================================
+  TIMER START EVENT. On deployment the engine creates ONE timer job; the job
+  executor starts a new instance every day at 07:00 and re-schedules the job.
+  Redeploying a new version removes the old version's timer job.
+  Other timer formats: timeDate (2026-12-31T23:59:00), timeDuration (PT15M),
+  timeCycle ISO (R/PT1H) or CRON (0 0/30 * * * ?).
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_DailyReport" targetNamespace="http://academy.com/bpmn"
+                  exporter="Camunda Modeler" exporterVersion="5.40.0"
+                  modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+  <bpmn:process id="daily-claims-report" name="Daily Claims Report" isExecutable="true" camunda:historyTimeToLive="P30D" camunda:versionTag="1.0">
+    <bpmn:startEvent id="StartEvent_EveryMorning" name="Every day 07:00">
+      <bpmn:documentation>TIMER start event with a CRON cycle (Quartz syntax incl. seconds: sec min hour day month weekday).</bpmn:documentation>
+      <bpmn:timerEventDefinition id="TimerDef_Daily">
+        <bpmn:timeCycle xsi:type="bpmn:tFormalExpression">0 0 7 * * ?</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Task_BuildReport" name="Build claims report" camunda:delegateExpression="${dailyClaimsReportDelegate}">
+      <bpmn:documentation>Uses the HistoryService from inside a delegate to count yesterday's claims.</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_ReportSent" name="Report sent">
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_EveryMorning" targetRef="Task_BuildReport" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_BuildReport" targetRef="EndEvent_ReportSent" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_daily-claims-report">
+    <bpmndi:BPMNPlane id="BPMNPlane_daily-claims-report" bpmnElement="daily-claims-report">
+      <bpmndi:BPMNShape id="Shape_StartEvent_EveryMorning" bpmnElement="StartEvent_EveryMorning">
+        <dc:Bounds x="82" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_BuildReport" bpmnElement="Task_BuildReport">
+        <dc:Bounds x="200" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_ReportSent" bpmnElement="EndEvent_ReportSent">
+        <dc:Bounds x="382" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Flow_1" bpmnElement="Flow_1">
+        <di:waypoint x="118" y="120" />
+        <di:waypoint x="200" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_2" bpmnElement="Flow_2">
+        <di:waypoint x="300" y="120" />
+        <di:waypoint x="382" y="120" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  CAMUNDA 7 ENGINE ACADEMY - Maven build file
+  ============================================================================
+  What this project is
+  A single Spring Boot application that EMBEDS the Camunda 7 process engine.
+  "Embedded" means the engine is just a Java library running inside our JVM:
+    * It shares our Spring transaction manager and DataSource.
+    * It calls our Spring beans directly (JavaDelegates, listeners, services).
+    * It exposes the Camunda web apps (Cockpit, Tasklist, Admin) and the
+      Camunda REST API (/engine-rest) because we add the two starters below.
+
+  Version choice
+  * Camunda 7.24.0 is the final Community Edition release line of Camunda 7
+    (Oct 2025). It is built and tested against Spring Boot 3.5.x and Java 17/21.
+  * Camunda 7 CE no longer receives feature releases. Camunda 8 (Zeebe) is the
+    strategic platform. This project is for learning/maintaining C7 systems and
+    for understanding the concepts you will later migrate to Camunda 8.
+
+  How to run
+     mvn spring-boot:run
+     open http://localhost:8080/camunda   (login: demo / demo)
+     REST API:  http://localhost:8080/engine-rest
+     Our own demo API: http://localhost:8080/api/...  (see README.md)
+  ============================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!-- Spring Boot parent gives us dependency management for Spring, H2,
+       Jackson, Groovy, JUnit 5, AssertJ ... and the spring-boot-maven-plugin. -->
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.5</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.academy</groupId>
+  <artifactId>camunda7-engine-academy</artifactId>
+  <version>1.0.0</version>
+  <name>Camunda 7 Engine Academy</name>
+  <description>Embedded Camunda 7 engine with real-world BPMN + DMN examples covering every core concept</description>
+
+  <properties>
+    <java.version>17</java.version>
+    <camunda.version>7.24.0</camunda.version>
+  </properties>
+
+  <!-- The Camunda BOM pins every Camunda artifact (engine, starters, Spin,
+       assert, junit5 extension) to ONE consistent version. Always import it
+       instead of hard-coding versions on individual Camunda dependencies. -->
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.camunda.bpm</groupId>
+        <artifactId>camunda-bom</artifactId>
+        <version>${camunda.version}</version>
+        <scope>import</scope>
+        <type>pom</type>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <!-- 1. The engine + Cockpit/Tasklist/Admin web applications.
+            Transitively brings camunda-bpm-spring-boot-starter (the engine). -->
+    <dependency>
+      <groupId>org.camunda.bpm.springboot</groupId>
+      <artifactId>camunda-bpm-spring-boot-starter-webapp</artifactId>
+    </dependency>
+
+    <!-- 2. The official Camunda REST API under /engine-rest. Used by Tasklist,
+            by external task workers in other languages, and by Postman. -->
+    <dependency>
+      <groupId>org.camunda.bpm.springboot</groupId>
+      <artifactId>camunda-bpm-spring-boot-starter-rest</artifactId>
+    </dependency>
+
+    <!-- 3. Spin = Camunda's data-format library. With these two jars the engine
+            can store Java objects as JSON variables (instead of opaque Java
+            serialization) and FEEL/JUEL can navigate JSON with S(...). -->
+    <dependency>
+      <groupId>org.camunda.bpm</groupId>
+      <artifactId>camunda-engine-plugin-spin</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.camunda.spin</groupId>
+      <artifactId>camunda-spin-dataformat-json-jackson</artifactId>
+    </dependency>
+
+    <!-- 4. A JSR-223 script engine for <scriptTask scriptFormat="groovy">.
+            Java 15+ removed Nashorn, so Groovy is the usual choice in C7. -->
+    <dependency>
+      <groupId>org.apache.groovy</groupId>
+      <artifactId>groovy-jsr223</artifactId>
+    </dependency>
+
+    <!-- 5. Our own REST controllers + bean validation. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- 6. Database. H2 file DB for local learning. In production switch to
+            PostgreSQL/Oracle/SQL Server/MySQL (see application.yaml). -->
+    <dependency>
+      <groupId>com.h2database</groupId>
+      <artifactId>h2</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+
+    <!-- ============================ TESTS ============================ -->
+    <!-- Brings spring-boot-starter-test (JUnit 5, AssertJ, Mockito) and
+         camunda-bpm-assert (fluent BPMN assertions: assertThat(pi).isWaitingAt(..)). -->
+    <dependency>
+      <groupId>org.camunda.bpm.springboot</groupId>
+      <artifactId>camunda-bpm-spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

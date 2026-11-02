@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  DMN 5: LEAVE APPROVAL - a Decision Requirements Graph (DRG / DRD)
+         "leave-eligibility"    Hit policy UNIQUE (U)
+         "leave-approval-level" Hit policy FIRST  (F), REQUIRES leave-eligibility
+  Used by: leave-approval.bpmn -> Business Rule Task decisionRef="leave-approval-level"
+  =============================================================================
+  DRD: the arrow (informationRequirement / requiredDecision) means
+  "leave-approval-level needs the result of leave-eligibility".
+  When the process asks for "leave-approval-level", Camunda FIRST evaluates
+  leave-eligibility, puts its outputs (eligible, eligibilityReason) into the
+  variable context, and THEN evaluates leave-approval-level. The process only
+  receives the result of the decision it asked for (the root decision).
+  Cockpit shows both evaluations in the decision history.
+
+  FIRST hit policy: rules are checked TOP-DOWN and the first match wins; the
+  remaining rules are not evaluated. Rule order IS the business priority, so
+  put the most specific / most restrictive rules at the top and a catch-all
+  rule at the bottom. (Overlaps are allowed and expected with FIRST.)
+
+  FEEL notes
+    * Input expression "availableBalance - requestedDays" computes a value.
+    * not("SICK") negates a unary test.
+    * true / false for booleans; "-" for any value.
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:camunda="http://camunda.org/schema/1.0/dmn"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_Leave" name="Leave Approval DRD"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             exporter="Camunda Modeler" exporterVersion="5.40.0"
+             modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+
+  <decision id="leave-approval-level" name="Leave Approval Level" camunda:historyTimeToLive="P30D">
+    <description>Who must approve the leave request (rule order = priority).</description>
+    <informationRequirement id="InfoReq_leave-approval-level_leave-eligibility">
+      <requiredDecision href="#leave-eligibility" />
+    </informationRequirement>
+    <decisionTable id="DecisionTable_leave-approval-level" hitPolicy="FIRST">
+      <input id="Input_leave-approval-level_1" label="Eligible? (from leave-eligibility)">
+        <inputExpression id="InputExpression_leave-approval-level_1" typeRef="boolean">
+          <text>eligible</text>
+        </inputExpression>
+      </input>
+      <input id="Input_leave-approval-level_2" label="Requested days">
+        <inputExpression id="InputExpression_leave-approval-level_2" typeRef="integer">
+          <text>requestedDays</text>
+        </inputExpression>
+      </input>
+      <input id="Input_leave-approval-level_3" label="Leave type">
+        <inputExpression id="InputExpression_leave-approval-level_3" typeRef="string">
+          <text>leaveType</text>
+        </inputExpression>
+      </input>
+      <output id="Output_leave-approval-level_1" label="Approval level" name="approvalLevel" typeRef="string" />
+      <rule id="Rule_leave-approval-level_1">
+        <description>Priority 1: not eligible -&gt; reject, nothing else matters</description>
+        <inputEntry id="InputEntry_leave-approval-level_1_1"><text>false</text></inputEntry>
+        <inputEntry id="InputEntry_leave-approval-level_1_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_leave-approval-level_1_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_leave-approval-level_1_1"><text>"REJECT"</text></outputEntry>
+      </rule>
+      <rule id="Rule_leave-approval-level_2">
+        <description>Priority 2: short sick/casual leave is auto-approved</description>
+        <inputEntry id="InputEntry_leave-approval-level_2_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_leave-approval-level_2_2"><text>&lt;= 2</text></inputEntry>
+        <inputEntry id="InputEntry_leave-approval-level_2_3"><text>"SICK","CASUAL"</text></inputEntry>
+        <outputEntry id="OutputEntry_leave-approval-level_2_1"><text>"AUTO"</text></outputEntry>
+      </rule>
+      <rule id="Rule_leave-approval-level_3">
+        <description>Priority 3: long absences need the HR director</description>
+        <inputEntry id="InputEntry_leave-approval-level_3_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_leave-approval-level_3_2"><text>&gt; 10</text></inputEntry>
+        <inputEntry id="InputEntry_leave-approval-level_3_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_leave-approval-level_3_1"><text>"HR_DIRECTOR"</text></outputEntry>
+      </rule>
+      <rule id="Rule_leave-approval-level_4">
+        <description>Catch-all: line manager approves</description>
+        <inputEntry id="InputEntry_leave-approval-level_4_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_leave-approval-level_4_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_leave-approval-level_4_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_leave-approval-level_4_1"><text>"MANAGER"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <decision id="leave-eligibility" name="Leave Eligibility" camunda:historyTimeToLive="P30D">
+    <description>Checks whether the employee has enough balance for the requested leave.</description>
+    <decisionTable id="DecisionTable_leave-eligibility" hitPolicy="UNIQUE">
+      <input id="Input_leave-eligibility_1" label="Leave type">
+        <inputExpression id="InputExpression_leave-eligibility_1" typeRef="string">
+          <text>leaveType</text>
+        </inputExpression>
+      </input>
+      <input id="Input_leave-eligibility_2" label="Balance after leave">
+        <inputExpression id="InputExpression_leave-eligibility_2" typeRef="integer">
+          <text>availableBalance - requestedDays</text>
+        </inputExpression>
+      </input>
+      <output id="Output_leave-eligibility_1" label="Eligible" name="eligible" typeRef="boolean" />
+      <output id="Output_leave-eligibility_2" label="Reason" name="eligibilityReason" typeRef="string" />
+      <rule id="Rule_leave-eligibility_1">
+        <inputEntry id="InputEntry_leave-eligibility_1_1"><text>"SICK"</text></inputEntry>
+        <inputEntry id="InputEntry_leave-eligibility_1_2"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_leave-eligibility_1_1"><text>true</text></outputEntry>
+        <outputEntry id="OutputEntry_leave-eligibility_1_2"><text>"Sick leave does not consume annual balance"</text></outputEntry>
+      </rule>
+      <rule id="Rule_leave-eligibility_2">
+        <inputEntry id="InputEntry_leave-eligibility_2_1"><text>not("SICK")</text></inputEntry>
+        <inputEntry id="InputEntry_leave-eligibility_2_2"><text>&gt;= 0</text></inputEntry>
+        <outputEntry id="OutputEntry_leave-eligibility_2_1"><text>true</text></outputEntry>
+        <outputEntry id="OutputEntry_leave-eligibility_2_2"><text>"Sufficient leave balance"</text></outputEntry>
+      </rule>
+      <rule id="Rule_leave-eligibility_3">
+        <inputEntry id="InputEntry_leave-eligibility_3_1"><text>not("SICK")</text></inputEntry>
+        <inputEntry id="InputEntry_leave-eligibility_3_2"><text>&lt; 0</text></inputEntry>
+        <outputEntry id="OutputEntry_leave-eligibility_3_1"><text>false</text></outputEntry>
+        <outputEntry id="OutputEntry_leave-eligibility_3_2"><text>"Insufficient leave balance"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_Definitions_Leave">
+      <dmndi:DMNShape id="DMNShape_leave-approval-level" dmnElementRef="leave-approval-level">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+      <dmndi:DMNEdge id="DMNEdge_leave-approval-level_leave-eligibility" dmnElementRef="InfoReq_leave-approval-level_leave-eligibility">
+        <di:waypoint x="250" y="300" />
+        <di:waypoint x="250" y="180" />
+      </dmndi:DMNEdge>
+      <dmndi:DMNShape id="DMNShape_leave-eligibility" dmnElementRef="leave-eligibility">
+        <dc:Bounds height="80" width="180" x="160" y="300" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

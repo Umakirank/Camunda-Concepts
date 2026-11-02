@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  DMN 3: CLAIM REQUIRED DOCUMENTS                 Hit policy: COLLECT (C), no aggregator
+  Used by: insurance-claim.bpmn -> Business Rule Task "Determine required documents"
+           with camunda:mapDecisionResult="collectEntries"
+  =============================================================================
+  COLLECT without aggregator returns a LIST with one entry per matching rule.
+  Because there is a single output column, mapDecisionResult="collectEntries"
+  turns the result into a java.util.List<String>, e.g.
+      ["Claim form", "Police report", "Vehicle repair estimate", "Medical report"]
+  The order of the list is NOT guaranteed by the DMN spec for COLLECT (Camunda
+  happens to return rule order, but do not depend on it - use RULE ORDER if
+  order matters).
+
+  Rule design strategy for COLLECT: think "one rule = one independent fact".
+  Each rule adds one document; rules overlap on purpose.
+
+  FEEL used:
+    "MOTOR"          string equality
+    "MOTOR","PROPERTY"  a comma means OR ("one of")
+    > 100000         numeric comparison
+    true             boolean equality
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:camunda="http://camunda.org/schema/1.0/dmn"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_ClaimDocs" name="Claim Required Documents"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             exporter="Camunda Modeler" exporterVersion="5.40.0"
+             modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+
+  <decision id="claim-required-documents" name="Claim Required Documents" camunda:historyTimeToLive="P30D">
+    <description>Collects every document the claimant must upload.</description>
+    <decisionTable id="DecisionTable_claim-required-documents" hitPolicy="COLLECT">
+      <input id="Input_claim-required-documents_1" label="Claim type">
+        <inputExpression id="InputExpression_claim-required-documents_1" typeRef="string">
+          <text>claimType</text>
+        </inputExpression>
+      </input>
+      <input id="Input_claim-required-documents_2" label="Claim amount">
+        <inputExpression id="InputExpression_claim-required-documents_2" typeRef="double">
+          <text>claimAmount</text>
+        </inputExpression>
+      </input>
+      <input id="Input_claim-required-documents_3" label="Injury involved?">
+        <inputExpression id="InputExpression_claim-required-documents_3" typeRef="boolean">
+          <text>hasInjury</text>
+        </inputExpression>
+      </input>
+      <output id="Output_claim-required-documents_1" label="Required document" name="document" typeRef="string" />
+      <rule id="Rule_claim-required-documents_1">
+        <description>Always required</description>
+        <inputEntry id="InputEntry_claim-required-documents_1_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_1_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_1_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_claim-required-documents_1_1"><text>"Signed claim form"</text></outputEntry>
+      </rule>
+      <rule id="Rule_claim-required-documents_2">
+        <inputEntry id="InputEntry_claim-required-documents_2_1"><text>"MOTOR"</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_2_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_2_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_claim-required-documents_2_1"><text>"Police FIR copy"</text></outputEntry>
+      </rule>
+      <rule id="Rule_claim-required-documents_3">
+        <inputEntry id="InputEntry_claim-required-documents_3_1"><text>"MOTOR"</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_3_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_3_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_claim-required-documents_3_1"><text>"Vehicle repair estimate"</text></outputEntry>
+      </rule>
+      <rule id="Rule_claim-required-documents_4">
+        <inputEntry id="InputEntry_claim-required-documents_4_1"><text>"HEALTH"</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_4_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_4_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_claim-required-documents_4_1"><text>"Hospital bills and discharge summary"</text></outputEntry>
+      </rule>
+      <rule id="Rule_claim-required-documents_5">
+        <inputEntry id="InputEntry_claim-required-documents_5_1"><text>"PROPERTY"</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_5_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_5_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_claim-required-documents_5_1"><text>"Photos of the damage"</text></outputEntry>
+      </rule>
+      <rule id="Rule_claim-required-documents_6">
+        <description>High value physical damage</description>
+        <inputEntry id="InputEntry_claim-required-documents_6_1"><text>"MOTOR","PROPERTY"</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_6_2"><text>&gt; 100000</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_6_3"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_claim-required-documents_6_1"><text>"Independent surveyor report"</text></outputEntry>
+      </rule>
+      <rule id="Rule_claim-required-documents_7">
+        <inputEntry id="InputEntry_claim-required-documents_7_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_7_2"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_claim-required-documents_7_3"><text>true</text></inputEntry>
+        <outputEntry id="OutputEntry_claim-required-documents_7_1"><text>"Medical report"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_Definitions_ClaimDocs">
+      <dmndi:DMNShape id="DMNShape_claim-required-documents" dmnElementRef="claim-required-documents">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

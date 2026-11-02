@@ -1,0 +1,378 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  PROCESS 1: LOAN APPROVAL  (Banking)                     key: loan-approval
+  =============================================================================
+  Business story
+    A customer applies for a personal loan. The bank validates the data, pulls
+    the credit score from a bureau, lets a DMN table classify the risk, routes
+    MEDIUM risk to a human underwriter, auto-approves LOW risk, auto-rejects
+    HIGH risk, and finally disburses the money.
+
+  Concepts covered
+    * None start event + generated start form + camunda:initiator
+    * Service task three ways:
+        - camunda:delegateExpression -> JavaDelegate Spring bean
+        - camunda:expression         -> method call on any Spring bean + resultVariable
+        - camunda:class              -> engine instantiates the class (field injection)
+    * Business rule task -> DMN (UNIQUE hit policy), mapDecisionResult=singleResult
+    * Exclusive gateway with conditions + DEFAULT flow
+    * Execution listener on a sequence flow ("take" event) and on the process
+    * User task: candidateGroups, dueDate (JUEL dateTime()), priority, form fields,
+      task listeners (create/assignment/complete/timeout)
+    * Boundary events: interrupting ERROR, non-interrupting TIMER, interrupting MESSAGE
+    * Send task, merge gateways, several end events
+    * Async continuation (asyncBefore), retries (failedJobRetryTimeCycle), job priority
+  Try it
+    POST /api/loans  {"applicantName":"Ravi","applicantPan":"ABCDE0800F",
+                      "annualIncome":1200000,"loanAmount":500000}
+    The 4 digits of the PAN are used by the mock bureau as the credit score
+    (0800 -> 800 -> LOW risk, 0700 -> MEDIUM, 0550 -> HIGH).
+    A PAN starting with "ERROR" simulates a bureau outage -> retries -> incident.
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_LoanApproval" targetNamespace="http://academy.com/bpmn"
+                  exporter="Camunda Modeler" exporterVersion="5.40.0"
+                  modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+  <bpmn:process id="loan-approval" name="Loan Approval" isExecutable="true" camunda:historyTimeToLive="P30D" camunda:versionTag="1.0" camunda:candidateStarterGroups="loan-officers,camunda-admin">
+    <bpmn:documentation>Retail loan origination: validate, score, decide with DMN, underwrite, disburse.</bpmn:documentation>
+    <bpmn:extensionElements>
+      <camunda:executionListener delegateExpression="${processAuditListener}" event="start" />
+      <camunda:executionListener delegateExpression="${processAuditListener}" event="end" />
+    </bpmn:extensionElements>
+    <bpmn:startEvent id="StartEvent_LoanSubmitted" name="Loan application submitted" camunda:initiator="initiator">
+      <bpmn:documentation>NONE start event with a generated start form. camunda:initiator stores the starting user id in variable 'initiator'.</bpmn:documentation>
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="applicantName" label="Applicant name" type="string">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="applicantPan" label="PAN (e.g. ABCDE0800F)" type="string">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="applicantEmail" label="E-mail" type="string" />
+          <camunda:formField id="annualIncome" label="Annual income (INR)" type="long">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="loanAmount" label="Loan amount (INR)" type="long">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+        </camunda:formData>
+      </bpmn:extensionElements>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="Task_ValidateApplication" name="Validate application" camunda:delegateExpression="${validateLoanApplicationDelegate}">
+      <bpmn:documentation>JavaDelegate Spring bean. Throws BpmnError INVALID_APPLICATION for business validation failures.</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="Task_FetchCreditScore" name="Fetch credit score" camunda:asyncBefore="true" camunda:expression="${creditBureauService.fetchCreditScore(applicantPan)}" camunda:resultVariable="creditScore">
+      <bpmn:documentation>Method-expression service task calling a plain Spring bean. asyncBefore = new transaction + job; technical failures are retried 3x every 5s, then an INCIDENT is raised in Cockpit.</bpmn:documentation>
+      <bpmn:extensionElements>
+        <camunda:failedJobRetryTimeCycle>R3/PT5S</camunda:failedJobRetryTimeCycle>
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:businessRuleTask id="Task_AssessRisk" name="Assess credit risk" camunda:decisionRef="loan-risk-assessment" camunda:mapDecisionResult="singleResult" camunda:resultVariable="riskDecision">
+      <bpmn:documentation>DMN loan-risk-assessment (UNIQUE). singleResult =&gt; Map {riskLevel, riskReason} stored in 'riskDecision'.</bpmn:documentation>
+    </bpmn:businessRuleTask>
+    <bpmn:exclusiveGateway id="Gateway_RiskLevel" name="Risk level?" default="Flow_RiskMedium">
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="UserTask_Underwrite" name="Underwrite loan" camunda:candidateGroups="underwriters" camunda:dueDate="${dateTime().plusDays(2).toDate()}" camunda:priority="60">
+      <bpmn:documentation>Human task for group 'underwriters'. Task listeners: create / assignment / complete / timeout(30 min).</bpmn:documentation>
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="applicantName" label="Applicant" type="string">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="loanAmount" label="Loan amount" type="long">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="creditScore" label="Credit score" type="long">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="riskReason" label="DMN reason" type="string">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="approved" label="Approve the loan?" type="boolean">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="underwriterComment" label="Comment" type="string" />
+        </camunda:formData>
+        <camunda:taskListener delegateExpression="${underwriterTaskListener}" event="create" />
+        <camunda:taskListener delegateExpression="${underwriterTaskListener}" event="assignment" />
+        <camunda:taskListener delegateExpression="${underwriterTaskListener}" event="complete" />
+        <camunda:taskListener delegateExpression="${underwriterTaskListener}" event="timeout" id="TaskListener_UnderwriterReminder">
+          <bpmn:timerEventDefinition id="TimerDef_UnderwriterReminder">
+            <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT30M</bpmn:timeDuration>
+          </bpmn:timerEventDefinition>
+        </camunda:taskListener>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_UnderwriterDecision" name="Approved?">
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_MergeApproved">
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="Task_DisburseLoan" name="Disburse loan" camunda:asyncBefore="true" camunda:jobPriority="100" camunda:delegateExpression="${disburseLoanDelegate}">
+      <bpmn:documentation>asyncBefore =&gt; the approval is committed BEFORE money moves (safe transaction boundary). jobPriority 100 = executed first.</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:sendTask id="Task_SendApproval" name="Send approval letter" camunda:class="com.academy.camunda.delegate.common.EmailNotificationDelegate">
+      <bpmn:extensionElements>
+        <camunda:field name="template">
+          <camunda:string>LOAN_APPROVED</camunda:string>
+        </camunda:field>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndEvent_LoanApproved" name="Loan disbursed">
+    </bpmn:endEvent>
+    <bpmn:exclusiveGateway id="Gateway_MergeRejected">
+    </bpmn:exclusiveGateway>
+    <bpmn:sendTask id="Task_SendRejection" name="Send rejection letter" camunda:class="com.academy.camunda.delegate.common.EmailNotificationDelegate">
+      <bpmn:extensionElements>
+        <camunda:field name="template">
+          <camunda:string>LOAN_REJECTED</camunda:string>
+        </camunda:field>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndEvent_LoanRejected" name="Loan rejected">
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_InvalidApplication" name="Invalid application" attachedToRef="Task_ValidateApplication">
+      <bpmn:documentation>Interrupting ERROR boundary event: catches BpmnError('INVALID_APPLICATION') thrown by the delegate.</bpmn:documentation>
+      <bpmn:errorEventDefinition id="ErrorDef_Invalid" errorRef="Error_InvalidApplication" camunda:errorCodeVariable="validationErrorCode" camunda:errorMessageVariable="validationErrorMessage" />
+    </bpmn:boundaryEvent>
+    <bpmn:sendTask id="Task_NotifyInvalid" name="Ask applicant to correct data" camunda:class="com.academy.camunda.delegate.common.EmailNotificationDelegate">
+      <bpmn:extensionElements>
+        <camunda:field name="template">
+          <camunda:string>APPLICATION_INVALID</camunda:string>
+        </camunda:field>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndEvent_Invalid" name="Application invalid">
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_UnderwritingSla" name="2 hours passed" attachedToRef="UserTask_Underwrite" cancelActivity="false">
+      <bpmn:documentation>NON-interrupting timer: the user task stays active, a parallel token escalates to the team lead.</bpmn:documentation>
+      <bpmn:timerEventDefinition id="TimerDef_Sla">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT2H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Task_EscalateSla" name="Escalate to team lead" camunda:delegateExpression="${underwriterSlaEscalationDelegate}">
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_Escalated" name="Escalated">
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_LoanWithdrawn" name="Applicant withdrew" attachedToRef="UserTask_Underwrite">
+      <bpmn:documentation>Interrupting MESSAGE boundary: runtimeService.createMessageCorrelation('LoanWithdrawn').processInstanceBusinessKey(..)</bpmn:documentation>
+      <bpmn:messageEventDefinition id="MsgDef_Withdrawn" messageRef="Message_LoanWithdrawn" />
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="EndEvent_Withdrawn" name="Application withdrawn">
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_LoanSubmitted" targetRef="Task_ValidateApplication" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_ValidateApplication" targetRef="Task_FetchCreditScore" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Task_FetchCreditScore" targetRef="Task_AssessRisk" />
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Task_AssessRisk" targetRef="Gateway_RiskLevel" />
+    <bpmn:sequenceFlow id="Flow_RiskLow" name="LOW" sourceRef="Gateway_RiskLevel" targetRef="Gateway_MergeApproved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${riskDecision.riskLevel == 'LOW'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_RiskMedium" name="MEDIUM (default)" sourceRef="Gateway_RiskLevel" targetRef="UserTask_Underwrite" />
+    <bpmn:sequenceFlow id="Flow_RiskHigh" name="HIGH" sourceRef="Gateway_RiskLevel" targetRef="Gateway_MergeRejected">
+      <bpmn:extensionElements>
+        <camunda:executionListener expression="${execution.setVariable('rejectionChannel', 'AUTOMATIC_RISK_RULE')}" event="take" />
+      </bpmn:extensionElements>
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${riskDecision.riskLevel == 'HIGH'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="UserTask_Underwrite" targetRef="Gateway_UnderwriterDecision" />
+    <bpmn:sequenceFlow id="Flow_Approved" name="yes" sourceRef="Gateway_UnderwriterDecision" targetRef="Gateway_MergeApproved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_NotApproved" name="no" sourceRef="Gateway_UnderwriterDecision" targetRef="Gateway_MergeRejected">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${!approved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_6" sourceRef="Gateway_MergeApproved" targetRef="Task_DisburseLoan" />
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="Task_DisburseLoan" targetRef="Task_SendApproval" />
+    <bpmn:sequenceFlow id="Flow_8" sourceRef="Task_SendApproval" targetRef="EndEvent_LoanApproved" />
+    <bpmn:sequenceFlow id="Flow_9" sourceRef="Gateway_MergeRejected" targetRef="Task_SendRejection" />
+    <bpmn:sequenceFlow id="Flow_10" sourceRef="Task_SendRejection" targetRef="EndEvent_LoanRejected" />
+    <bpmn:sequenceFlow id="Flow_11" sourceRef="Boundary_InvalidApplication" targetRef="Task_NotifyInvalid" />
+    <bpmn:sequenceFlow id="Flow_12" sourceRef="Task_NotifyInvalid" targetRef="EndEvent_Invalid" />
+    <bpmn:sequenceFlow id="Flow_13" sourceRef="Boundary_UnderwritingSla" targetRef="Task_EscalateSla" />
+    <bpmn:sequenceFlow id="Flow_14" sourceRef="Task_EscalateSla" targetRef="EndEvent_Escalated" />
+    <bpmn:sequenceFlow id="Flow_15" sourceRef="Boundary_LoanWithdrawn" targetRef="EndEvent_Withdrawn" />
+  </bpmn:process>
+  <bpmn:error id="Error_InvalidApplication" name="Invalid application" errorCode="INVALID_APPLICATION" />
+  <bpmn:message id="Message_LoanWithdrawn" name="LoanWithdrawn" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_loan-approval">
+    <bpmndi:BPMNPlane id="BPMNPlane_loan-approval" bpmnElement="loan-approval">
+      <bpmndi:BPMNShape id="Shape_StartEvent_LoanSubmitted" bpmnElement="StartEvent_LoanSubmitted">
+        <dc:Bounds x="82" y="202" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_ValidateApplication" bpmnElement="Task_ValidateApplication">
+        <dc:Bounds x="180" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_FetchCreditScore" bpmnElement="Task_FetchCreditScore">
+        <dc:Bounds x="340" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_AssessRisk" bpmnElement="Task_AssessRisk">
+        <dc:Bounds x="500" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_RiskLevel" bpmnElement="Gateway_RiskLevel">
+        <dc:Bounds x="665" y="195" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_UserTask_Underwrite" bpmnElement="UserTask_Underwrite">
+        <dc:Bounds x="780" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_UnderwriterDecision" bpmnElement="Gateway_UnderwriterDecision">
+        <dc:Bounds x="955" y="195" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_MergeApproved" bpmnElement="Gateway_MergeApproved">
+        <dc:Bounds x="1075" y="45" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_DisburseLoan" bpmnElement="Task_DisburseLoan">
+        <dc:Bounds x="1180" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_SendApproval" bpmnElement="Task_SendApproval">
+        <dc:Bounds x="1330" y="30" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_LoanApproved" bpmnElement="EndEvent_LoanApproved">
+        <dc:Bounds x="1492" y="52" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_MergeRejected" bpmnElement="Gateway_MergeRejected">
+        <dc:Bounds x="1075" y="335" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_SendRejection" bpmnElement="Task_SendRejection">
+        <dc:Bounds x="1180" y="320" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_LoanRejected" bpmnElement="EndEvent_LoanRejected">
+        <dc:Bounds x="1352" y="342" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_NotifyInvalid" bpmnElement="Task_NotifyInvalid">
+        <dc:Bounds x="180" y="340" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_Invalid" bpmnElement="EndEvent_Invalid">
+        <dc:Bounds x="352" y="362" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_EscalateSla" bpmnElement="Task_EscalateSla">
+        <dc:Bounds x="910" y="460" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_Escalated" bpmnElement="EndEvent_Escalated">
+        <dc:Bounds x="1082" y="482" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_Withdrawn" bpmnElement="EndEvent_Withdrawn">
+        <dc:Bounds x="912" y="122" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_InvalidApplication" bpmnElement="Boundary_InvalidApplication">
+        <dc:Bounds x="212" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_UnderwritingSla" bpmnElement="Boundary_UnderwritingSla">
+        <dc:Bounds x="792" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_LoanWithdrawn" bpmnElement="Boundary_LoanWithdrawn">
+        <dc:Bounds x="837" y="162" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Flow_1" bpmnElement="Flow_1">
+        <di:waypoint x="118" y="220" />
+        <di:waypoint x="180" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_2" bpmnElement="Flow_2">
+        <di:waypoint x="280" y="220" />
+        <di:waypoint x="340" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_3" bpmnElement="Flow_3">
+        <di:waypoint x="440" y="220" />
+        <di:waypoint x="500" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_4" bpmnElement="Flow_4">
+        <di:waypoint x="600" y="220" />
+        <di:waypoint x="665" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_RiskLow" bpmnElement="Flow_RiskLow">
+        <di:waypoint x="690" y="195" />
+        <di:waypoint x="690" y="70" />
+        <di:waypoint x="1075" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_RiskMedium" bpmnElement="Flow_RiskMedium">
+        <di:waypoint x="715" y="220" />
+        <di:waypoint x="780" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_RiskHigh" bpmnElement="Flow_RiskHigh">
+        <di:waypoint x="690" y="245" />
+        <di:waypoint x="690" y="360" />
+        <di:waypoint x="1075" y="360" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_5" bpmnElement="Flow_5">
+        <di:waypoint x="880" y="220" />
+        <di:waypoint x="955" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_Approved" bpmnElement="Flow_Approved">
+        <di:waypoint x="980" y="195" />
+        <di:waypoint x="980" y="70" />
+        <di:waypoint x="1075" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_NotApproved" bpmnElement="Flow_NotApproved">
+        <di:waypoint x="980" y="245" />
+        <di:waypoint x="980" y="360" />
+        <di:waypoint x="1075" y="360" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_6" bpmnElement="Flow_6">
+        <di:waypoint x="1125" y="70" />
+        <di:waypoint x="1180" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_7" bpmnElement="Flow_7">
+        <di:waypoint x="1280" y="70" />
+        <di:waypoint x="1330" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_8" bpmnElement="Flow_8">
+        <di:waypoint x="1430" y="70" />
+        <di:waypoint x="1492" y="70" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_9" bpmnElement="Flow_9">
+        <di:waypoint x="1125" y="360" />
+        <di:waypoint x="1180" y="360" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_10" bpmnElement="Flow_10">
+        <di:waypoint x="1280" y="360" />
+        <di:waypoint x="1352" y="360" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_11" bpmnElement="Flow_11">
+        <di:waypoint x="230" y="278" />
+        <di:waypoint x="230" y="340" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_12" bpmnElement="Flow_12">
+        <di:waypoint x="280" y="380" />
+        <di:waypoint x="352" y="380" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_13" bpmnElement="Flow_13">
+        <di:waypoint x="810" y="278" />
+        <di:waypoint x="810" y="500" />
+        <di:waypoint x="910" y="500" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_14" bpmnElement="Flow_14">
+        <di:waypoint x="1010" y="500" />
+        <di:waypoint x="1082" y="500" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_15" bpmnElement="Flow_15">
+        <di:waypoint x="855" y="162" />
+        <di:waypoint x="855" y="140" />
+        <di:waypoint x="912" y="140" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

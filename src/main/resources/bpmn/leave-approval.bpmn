@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  PROCESS 6: LEAVE APPROVAL  (Human Resources)              key: leave-approval
+  =============================================================================
+  Business story
+    An employee requests leave. A DRD (two linked DMN decisions) checks the
+    balance and decides who approves: AUTO, MANAGER, HR_DIRECTOR or REJECT.
+    Pending manager approvals are reminded daily; the employee can cancel the
+    request while it waits (conditional event) which terminates everything.
+
+  Concepts covered
+    * Business rule task calling a DRD root decision (FIRST + UNIQUE)
+    * Exclusive gateway with 4 conditional flows (no default -> an unmatched
+      value would raise "No outgoing sequence flow" - see Troubleshooting)
+    * Conditional boundary event (variableName filter)
+    * Timer CYCLE boundary event (R2/PT24H)
+    * Link throw/catch events (two throws -> one catch)
+    * Terminate end event, manual task
+  Try it
+    PUT /api/process-instances/{id}/variables/leaveCancelled  body: true
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_LeaveApproval" targetNamespace="http://academy.com/bpmn"
+                  exporter="Camunda Modeler" exporterVersion="5.40.0"
+                  modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+  <bpmn:process id="leave-approval" name="Leave Approval" isExecutable="true" camunda:historyTimeToLive="P30D" camunda:versionTag="1.0">
+    <bpmn:documentation>Leave request decided by a DRD, approved by manager or HR director; can be cancelled while pending.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_LeaveRequested" name="Leave requested">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="employeeName" label="Employee" type="string">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="leaveType" label="Leave type" type="enum">
+            <camunda:value id="ANNUAL" name="ANNUAL" />
+            <camunda:value id="SICK" name="SICK" />
+            <camunda:value id="CASUAL" name="CASUAL" />
+            <camunda:value id="UNPAID" name="UNPAID" />
+          </camunda:formField>
+          <camunda:formField id="requestedDays" label="Days" type="long">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="availableBalance" label="Available balance" type="long" defaultValue="12" />
+          <camunda:formField id="managerId" label="Manager" type="string" defaultValue="priya" />
+        </camunda:formData>
+      </bpmn:extensionElements>
+    </bpmn:startEvent>
+    <bpmn:businessRuleTask id="Task_DetermineApprovalLevel" name="Determine approval level" camunda:decisionRef="leave-approval-level" camunda:mapDecisionResult="singleEntry" camunda:resultVariable="approvalLevel">
+      <bpmn:documentation>Calls the ROOT decision of a DRD. The engine evaluates the required decision 'leave-eligibility' first.</bpmn:documentation>
+    </bpmn:businessRuleTask>
+    <bpmn:exclusiveGateway id="Gateway_ApprovalLevel" name="Approval level?">
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="UserTask_ManagerApproval" name="Manager approval" camunda:assignee="${managerId}">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="employeeName" label="Employee" type="string">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="leaveType" label="Type" type="string">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="requestedDays" label="Days" type="long">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="approved" label="Approve?" type="boolean">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+        </camunda:formData>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:userTask id="UserTask_HrDirectorApproval" name="HR director approval" camunda:candidateGroups="hr-directors">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="employeeName" label="Employee" type="string">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="requestedDays" label="Days" type="long">
+            <camunda:validation>
+              <camunda:constraint name="readonly" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="approved" label="Approve?" type="boolean">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+        </camunda:formData>
+      </bpmn:extensionElements>
+    </bpmn:userTask>
+    <bpmn:exclusiveGateway id="Gateway_MergeReview">
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_LeaveApproved" name="Approved?">
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="Gateway_MergeApproved">
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="Task_BookLeave" name="Book leave in HR system" camunda:delegateExpression="${leaveBookingDelegate}">
+    </bpmn:serviceTask>
+    <bpmn:manualTask id="ManualTask_UpdateRegister" name="Update attendance register">
+    </bpmn:manualTask>
+    <bpmn:endEvent id="EndEvent_LeaveApproved" name="Leave approved">
+    </bpmn:endEvent>
+    <bpmn:intermediateThrowEvent id="Event_GoToRejection1" name="Go to rejection">
+      <bpmn:documentation>LINK throw: a 'go to' inside the same process level to avoid long crossing arrows.</bpmn:documentation>
+      <bpmn:linkEventDefinition id="LinkDef_T1" name="Rejection" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:intermediateThrowEvent id="Event_GoToRejection2" name="Go to rejection">
+      <bpmn:linkEventDefinition id="LinkDef_T2" name="Rejection" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:intermediateCatchEvent id="Event_Rejection" name="Rejection">
+      <bpmn:documentation>LINK catch with the same link name 'Rejection'. Two throw events jump here.</bpmn:documentation>
+      <bpmn:linkEventDefinition id="LinkDef_C" name="Rejection" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:sendTask id="Task_NotifyRejected" name="Notify employee" camunda:class="com.academy.camunda.delegate.common.EmailNotificationDelegate">
+      <bpmn:extensionElements>
+        <camunda:field name="template">
+          <camunda:string>LEAVE_REJECTED</camunda:string>
+        </camunda:field>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndEvent_LeaveRejected" name="Leave rejected">
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_LeaveCancelled" name="Employee cancelled" attachedToRef="UserTask_ManagerApproval">
+      <bpmn:documentation>CONDITIONAL boundary (interrupting): fires as soon as variable 'leaveCancelled' becomes true.</bpmn:documentation>
+      <bpmn:conditionalEventDefinition id="CondDef_Cancelled" camunda:variableName="leaveCancelled">
+        <bpmn:condition xsi:type="bpmn:tFormalExpression">${execution.getVariable('leaveCancelled') == true}</bpmn:condition>
+      </bpmn:conditionalEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:serviceTask id="Task_CloseRequest" name="Close request" camunda:expression="${execution.setVariable('leaveStatus', 'CANCELLED')}">
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_Terminated" name="Request cancelled">
+      <bpmn:documentation>TERMINATE end event: kills ALL remaining tokens of the process instance (e.g. the reminder timer).</bpmn:documentation>
+      <bpmn:terminateEventDefinition id="TermDef" />
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="Boundary_DailyReminder" name="Every 24h (max 2)" attachedToRef="UserTask_ManagerApproval" cancelActivity="false">
+      <bpmn:documentation>Non-interrupting timer CYCLE (ISO 8601 repeating interval R2/PT24H): fires twice, once per day.</bpmn:documentation>
+      <bpmn:timerEventDefinition id="TimerDef_Reminder">
+        <bpmn:timeCycle xsi:type="bpmn:tFormalExpression">R2/PT24H</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:sendTask id="Task_SendReminder" name="Remind manager" camunda:class="com.academy.camunda.delegate.common.EmailNotificationDelegate">
+      <bpmn:extensionElements>
+        <camunda:field name="template">
+          <camunda:string>LEAVE_REMINDER</camunda:string>
+        </camunda:field>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndEvent_Reminded">
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_LeaveRequested" targetRef="Task_DetermineApprovalLevel" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_DetermineApprovalLevel" targetRef="Gateway_ApprovalLevel" />
+    <bpmn:sequenceFlow id="Flow_3" name="AUTO" sourceRef="Gateway_ApprovalLevel" targetRef="Gateway_MergeApproved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approvalLevel == 'AUTO'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_4" name="MANAGER" sourceRef="Gateway_ApprovalLevel" targetRef="UserTask_ManagerApproval">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approvalLevel == 'MANAGER'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_5" name="HR_DIRECTOR" sourceRef="Gateway_ApprovalLevel" targetRef="UserTask_HrDirectorApproval">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approvalLevel == 'HR_DIRECTOR'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_6" name="REJECT" sourceRef="Gateway_ApprovalLevel" targetRef="Event_GoToRejection1">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approvalLevel == 'REJECT'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="UserTask_ManagerApproval" targetRef="Gateway_MergeReview" />
+    <bpmn:sequenceFlow id="Flow_8" sourceRef="UserTask_HrDirectorApproval" targetRef="Gateway_MergeReview" />
+    <bpmn:sequenceFlow id="Flow_9" sourceRef="Gateway_MergeReview" targetRef="Gateway_LeaveApproved" />
+    <bpmn:sequenceFlow id="Flow_10" name="yes" sourceRef="Gateway_LeaveApproved" targetRef="Gateway_MergeApproved">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${approved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_11" name="no" sourceRef="Gateway_LeaveApproved" targetRef="Event_GoToRejection2">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${!approved}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_12" sourceRef="Gateway_MergeApproved" targetRef="Task_BookLeave" />
+    <bpmn:sequenceFlow id="Flow_13" sourceRef="Task_BookLeave" targetRef="ManualTask_UpdateRegister" />
+    <bpmn:sequenceFlow id="Flow_14" sourceRef="ManualTask_UpdateRegister" targetRef="EndEvent_LeaveApproved" />
+    <bpmn:sequenceFlow id="Flow_15" sourceRef="Event_Rejection" targetRef="Task_NotifyRejected" />
+    <bpmn:sequenceFlow id="Flow_16" sourceRef="Task_NotifyRejected" targetRef="EndEvent_LeaveRejected" />
+    <bpmn:sequenceFlow id="Flow_17" sourceRef="Boundary_LeaveCancelled" targetRef="Task_CloseRequest" />
+    <bpmn:sequenceFlow id="Flow_18" sourceRef="Task_CloseRequest" targetRef="EndEvent_Terminated" />
+    <bpmn:sequenceFlow id="Flow_19" sourceRef="Boundary_DailyReminder" targetRef="Task_SendReminder" />
+    <bpmn:sequenceFlow id="Flow_20" sourceRef="Task_SendReminder" targetRef="EndEvent_Reminded" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_leave-approval">
+    <bpmndi:BPMNPlane id="BPMNPlane_leave-approval" bpmnElement="leave-approval">
+      <bpmndi:BPMNShape id="Shape_StartEvent_LeaveRequested" bpmnElement="StartEvent_LeaveRequested">
+        <dc:Bounds x="82" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_DetermineApprovalLevel" bpmnElement="Task_DetermineApprovalLevel">
+        <dc:Bounds x="190" y="220" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_ApprovalLevel" bpmnElement="Gateway_ApprovalLevel">
+        <dc:Bounds x="355" y="235" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_UserTask_ManagerApproval" bpmnElement="UserTask_ManagerApproval">
+        <dc:Bounds x="490" y="220" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_UserTask_HrDirectorApproval" bpmnElement="UserTask_HrDirectorApproval">
+        <dc:Bounds x="490" y="430" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_MergeReview" bpmnElement="Gateway_MergeReview">
+        <dc:Bounds x="695" y="235" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_LeaveApproved" bpmnElement="Gateway_LeaveApproved">
+        <dc:Bounds x="795" y="235" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_MergeApproved" bpmnElement="Gateway_MergeApproved">
+        <dc:Bounds x="915" y="95" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_BookLeave" bpmnElement="Task_BookLeave">
+        <dc:Bounds x="1010" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_ManualTask_UpdateRegister" bpmnElement="ManualTask_UpdateRegister">
+        <dc:Bounds x="1150" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_LeaveApproved" bpmnElement="EndEvent_LeaveApproved">
+        <dc:Bounds x="1312" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Event_GoToRejection1" bpmnElement="Event_GoToRejection1">
+        <dc:Bounds x="362" y="582" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Event_GoToRejection2" bpmnElement="Event_GoToRejection2">
+        <dc:Bounds x="922" y="362" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Event_Rejection" bpmnElement="Event_Rejection">
+        <dc:Bounds x="1042" y="582" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_NotifyRejected" bpmnElement="Task_NotifyRejected">
+        <dc:Bounds x="1130" y="560" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_LeaveRejected" bpmnElement="EndEvent_LeaveRejected">
+        <dc:Bounds x="1292" y="582" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_CloseRequest" bpmnElement="Task_CloseRequest">
+        <dc:Bounds x="470" y="10" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_Terminated" bpmnElement="EndEvent_Terminated">
+        <dc:Bounds x="632" y="32" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_SendReminder" bpmnElement="Task_SendReminder">
+        <dc:Bounds x="610" y="330" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_Reminded" bpmnElement="EndEvent_Reminded">
+        <dc:Bounds x="762" y="352" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_LeaveCancelled" bpmnElement="Boundary_LeaveCancelled">
+        <dc:Bounds x="502" y="202" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_DailyReminder" bpmnElement="Boundary_DailyReminder">
+        <dc:Bounds x="542" y="282" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Flow_1" bpmnElement="Flow_1">
+        <di:waypoint x="118" y="260" />
+        <di:waypoint x="190" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_2" bpmnElement="Flow_2">
+        <di:waypoint x="290" y="260" />
+        <di:waypoint x="355" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_3" bpmnElement="Flow_3">
+        <di:waypoint x="380" y="235" />
+        <di:waypoint x="380" y="120" />
+        <di:waypoint x="915" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_4" bpmnElement="Flow_4">
+        <di:waypoint x="405" y="260" />
+        <di:waypoint x="490" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_5" bpmnElement="Flow_5">
+        <di:waypoint x="380" y="285" />
+        <di:waypoint x="380" y="470" />
+        <di:waypoint x="490" y="470" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_6" bpmnElement="Flow_6">
+        <di:waypoint x="380" y="285" />
+        <di:waypoint x="380" y="582" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_7" bpmnElement="Flow_7">
+        <di:waypoint x="590" y="260" />
+        <di:waypoint x="695" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_8" bpmnElement="Flow_8">
+        <di:waypoint x="590" y="470" />
+        <di:waypoint x="720" y="470" />
+        <di:waypoint x="720" y="285" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_9" bpmnElement="Flow_9">
+        <di:waypoint x="745" y="260" />
+        <di:waypoint x="795" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_10" bpmnElement="Flow_10">
+        <di:waypoint x="820" y="235" />
+        <di:waypoint x="820" y="120" />
+        <di:waypoint x="915" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_11" bpmnElement="Flow_11">
+        <di:waypoint x="820" y="285" />
+        <di:waypoint x="820" y="380" />
+        <di:waypoint x="922" y="380" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_12" bpmnElement="Flow_12">
+        <di:waypoint x="965" y="120" />
+        <di:waypoint x="1010" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_13" bpmnElement="Flow_13">
+        <di:waypoint x="1110" y="120" />
+        <di:waypoint x="1150" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_14" bpmnElement="Flow_14">
+        <di:waypoint x="1250" y="120" />
+        <di:waypoint x="1312" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_15" bpmnElement="Flow_15">
+        <di:waypoint x="1078" y="600" />
+        <di:waypoint x="1130" y="600" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_16" bpmnElement="Flow_16">
+        <di:waypoint x="1230" y="600" />
+        <di:waypoint x="1292" y="600" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_17" bpmnElement="Flow_17">
+        <di:waypoint x="520" y="202" />
+        <di:waypoint x="520" y="90" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_18" bpmnElement="Flow_18">
+        <di:waypoint x="570" y="50" />
+        <di:waypoint x="632" y="50" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_19" bpmnElement="Flow_19">
+        <di:waypoint x="560" y="318" />
+        <di:waypoint x="560" y="370" />
+        <di:waypoint x="610" y="370" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_20" bpmnElement="Flow_20">
+        <di:waypoint x="710" y="370" />
+        <di:waypoint x="762" y="370" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

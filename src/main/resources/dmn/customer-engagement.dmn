@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  DMN 7: CUSTOMER ENGAGEMENT (evaluated directly via DecisionService - no BPMN)
+         "matching-promotions-count"  Hit policy COLLECT COUNT (C#)
+         "customer-greeting"          Decision LITERAL EXPRESSION (not a table)
+  Used by: DecisionEvaluationService / DecisionController  (POST /api/decisions/...)
+  =============================================================================
+  Not every decision must be called from a process! DecisionService lets any
+  Java code (or the REST API: POST /engine-rest/decision-definition/key/{key}/evaluate)
+  evaluate a deployed decision, with full history in Cockpit.
+
+  COLLECT COUNT (C#): counts how many rules matched. The output values are
+  ignored - only the number of hits matters. Here: "how many promotions is this
+  customer eligible for?" -> used for a marketing badge "3 offers for you".
+  Note: the DMN spec defines C# as "number of DISTINCT outputs"; Camunda 7
+  counts every matching rule that produced a non-empty output. Give every rule
+  a different output value and both interpretations agree (portable to C8).
+
+  LITERAL EXPRESSION: a decision whose logic is one FEEL expression instead of
+  a table. Useful for calculations and string building. Result variable:
+  "greeting". FEEL features used: string concatenation (+), if-then-else.
+-->
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/"
+             xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/"
+             xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/"
+             xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/"
+             xmlns:camunda="http://camunda.org/schema/1.0/dmn"
+             xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+             id="Definitions_Engagement" name="Customer Engagement"
+             namespace="http://camunda.org/schema/1.0/dmn"
+             exporter="Camunda Modeler" exporterVersion="5.40.0"
+             modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+
+  <decision id="matching-promotions-count" name="Matching Promotions Count" camunda:historyTimeToLive="P30D">
+    <description>Number of promotions a customer is eligible for.</description>
+    <decisionTable id="DecisionTable_matching-promotions-count" hitPolicy="COLLECT" aggregation="COUNT">
+      <input id="Input_matching-promotions-count_1" label="Customer type">
+        <inputExpression id="InputExpression_matching-promotions-count_1" typeRef="string">
+          <text>customerType</text>
+        </inputExpression>
+      </input>
+      <input id="Input_matching-promotions-count_2" label="Order total">
+        <inputExpression id="InputExpression_matching-promotions-count_2" typeRef="double">
+          <text>orderTotal</text>
+        </inputExpression>
+      </input>
+      <output id="Output_matching-promotions-count_1" label="Promotion" name="promotion" typeRef="string" />
+      <rule id="Rule_matching-promotions-count_1">
+        <inputEntry id="InputEntry_matching-promotions-count_1_1"><text>"GOLD"</text></inputEntry>
+        <inputEntry id="InputEntry_matching-promotions-count_1_2"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_matching-promotions-count_1_1"><text>"Free express delivery"</text></outputEntry>
+      </rule>
+      <rule id="Rule_matching-promotions-count_2">
+        <inputEntry id="InputEntry_matching-promotions-count_2_1"><text>"GOLD","SILVER"</text></inputEntry>
+        <inputEntry id="InputEntry_matching-promotions-count_2_2"><text>-</text></inputEntry>
+        <outputEntry id="OutputEntry_matching-promotions-count_2_1"><text>"Loyalty points x2"</text></outputEntry>
+      </rule>
+      <rule id="Rule_matching-promotions-count_3">
+        <inputEntry id="InputEntry_matching-promotions-count_3_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_matching-promotions-count_3_2"><text>&gt;= 10000</text></inputEntry>
+        <outputEntry id="OutputEntry_matching-promotions-count_3_1"><text>"Free gift wrap"</text></outputEntry>
+      </rule>
+      <rule id="Rule_matching-promotions-count_4">
+        <inputEntry id="InputEntry_matching-promotions-count_4_1"><text>-</text></inputEntry>
+        <inputEntry id="InputEntry_matching-promotions-count_4_2"><text>&gt;= 50000</text></inputEntry>
+        <outputEntry id="OutputEntry_matching-promotions-count_4_1"><text>"Personal shopper call"</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <decision id="customer-greeting" name="Customer Greeting" camunda:historyTimeToLive="P30D">
+    <description>Builds a personalised greeting with FEEL.</description>
+    <variable id="Variable_customer-greeting" name="greeting" typeRef="string" />
+    <literalExpression id="LiteralExpression_customer-greeting">
+      <text>"Hello " + customerName + (if customerType = "GOLD" then ", thank you for being a Gold member!" else "!")</text>
+    </literalExpression>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_Definitions_Engagement">
+      <dmndi:DMNShape id="DMNShape_matching-promotions-count" dmnElementRef="matching-promotions-count">
+        <dc:Bounds height="80" width="180" x="160" y="100" />
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="DMNShape_customer-greeting" dmnElementRef="customer-greeting">
+        <dc:Bounds height="80" width="180" x="420" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

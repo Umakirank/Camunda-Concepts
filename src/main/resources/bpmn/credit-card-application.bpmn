@@ -1,0 +1,304 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  =============================================================================
+  PROCESS 7: CREDIT CARD APPLICATION  (Banking)    key: credit-card-application
+  =============================================================================
+  Business story
+    Knock-out rules decide eligibility. Eligible applicants get a ranked list
+    of offers. Issuing (open account, reserve credit line, KYC check) is ONE
+    business transaction: if KYC fails we must undo the account and the credit
+    line - automatically, in reverse order - and tell the applicant.
+
+  Concepts covered
+    * DMN ANY + DMN RULE ORDER (collectEntries -> List)
+    * Transaction sub-process, cancel end event, cancel boundary event
+    * Compensation handlers inside a transaction (run automatically on cancel)
+    * Service tasks implemented as bean-method expressions passing "execution"
+    * asyncAfter
+-->
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:camunda="http://camunda.org/schema/1.0/bpmn"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_CreditCard" targetNamespace="http://academy.com/bpmn"
+                  exporter="Camunda Modeler" exporterVersion="5.40.0"
+                  modeler:executionPlatform="Camunda Platform" modeler:executionPlatformVersion="7.24.0">
+  <bpmn:process id="credit-card-application" name="Credit Card Application" isExecutable="true" camunda:historyTimeToLive="P30D" camunda:versionTag="1.0">
+    <bpmn:documentation>Eligibility (DMN ANY), offers (DMN RULE ORDER), issuing inside a TRANSACTION sub-process with cancel + compensation.</bpmn:documentation>
+    <bpmn:startEvent id="StartEvent_CardApplied" name="Card application received">
+      <bpmn:extensionElements>
+        <camunda:formData>
+          <camunda:formField id="applicantName" label="Applicant" type="string">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="age" label="Age" type="long">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="monthlyIncome" label="Monthly income" type="long">
+            <camunda:validation>
+              <camunda:constraint name="required" />
+            </camunda:validation>
+          </camunda:formField>
+          <camunda:formField id="hasDefaults" label="Existing defaults?" type="boolean" />
+          <camunda:formField id="applicantEmail" label="E-mail" type="string" />
+        </camunda:formData>
+      </bpmn:extensionElements>
+    </bpmn:startEvent>
+    <bpmn:businessRuleTask id="Task_CheckEligibility" name="Check eligibility" camunda:decisionRef="credit-card-eligibility" camunda:mapDecisionResult="singleEntry" camunda:resultVariable="eligibility">
+      <bpmn:documentation>DMN ANY hit policy: knock-out rules.</bpmn:documentation>
+    </bpmn:businessRuleTask>
+    <bpmn:exclusiveGateway id="Gateway_Eligible" name="Eligible?" default="Flow_NotEligible">
+    </bpmn:exclusiveGateway>
+    <bpmn:businessRuleTask id="Task_DetermineOffers" name="Determine offers" camunda:decisionRef="credit-card-offers" camunda:mapDecisionResult="collectEntries" camunda:resultVariable="offers">
+      <bpmn:documentation>DMN RULE ORDER: ranked list of offers.</bpmn:documentation>
+    </bpmn:businessRuleTask>
+    <bpmn:transaction id="Transaction_IssueCard" name="Issue card (transaction)">
+      <bpmn:documentation>TRANSACTION sub-process (business transaction, NOT a DB transaction): if it ends in a CANCEL end event, all completed activities inside are compensated and the cancel boundary event fires.</bpmn:documentation>
+      <bpmn:startEvent id="StartEvent_Tx">
+      </bpmn:startEvent>
+      <bpmn:serviceTask id="Task_CreateCardAccount" name="Create card account" camunda:expression="${cardIssuingService.createCardAccount(execution)}">
+        <bpmn:documentation>Expression calling a Spring bean method and passing the DelegateExecution.</bpmn:documentation>
+      </bpmn:serviceTask>
+      <bpmn:serviceTask id="Task_ReserveCreditLine" name="Reserve credit line" camunda:expression="${cardIssuingService.reserveCreditLine(execution)}">
+      </bpmn:serviceTask>
+      <bpmn:userTask id="UserTask_KycVerification" name="Verify KYC documents" camunda:candidateGroups="kyc-officers">
+        <bpmn:extensionElements>
+          <camunda:formData>
+            <camunda:formField id="applicantName" label="Applicant" type="string">
+              <camunda:validation>
+                <camunda:constraint name="readonly" />
+              </camunda:validation>
+            </camunda:formField>
+            <camunda:formField id="kycPassed" label="KYC passed?" type="boolean">
+              <camunda:validation>
+                <camunda:constraint name="required" />
+              </camunda:validation>
+            </camunda:formField>
+          </camunda:formData>
+        </bpmn:extensionElements>
+      </bpmn:userTask>
+      <bpmn:exclusiveGateway id="Gateway_KycPassed" name="KYC ok?">
+      </bpmn:exclusiveGateway>
+      <bpmn:endEvent id="EndEvent_TxCompleted">
+      </bpmn:endEvent>
+      <bpmn:endEvent id="EndEvent_TxCancelled" name="Cancel issuing">
+        <bpmn:documentation>CANCEL end event: only allowed inside a transaction sub-process.</bpmn:documentation>
+        <bpmn:cancelEventDefinition id="CancelDef_End" />
+      </bpmn:endEvent>
+      <bpmn:boundaryEvent id="Boundary_CompensateAccount" attachedToRef="Task_CreateCardAccount">
+        <bpmn:compensateEventDefinition id="CompDef_Acc" />
+      </bpmn:boundaryEvent>
+      <bpmn:serviceTask id="Task_CloseCardAccount" name="Close card account" isForCompensation="true" camunda:expression="${cardIssuingService.closeCardAccount(execution)}">
+      </bpmn:serviceTask>
+      <bpmn:boundaryEvent id="Boundary_CompensateCreditLine" attachedToRef="Task_ReserveCreditLine">
+        <bpmn:compensateEventDefinition id="CompDef_Line" />
+      </bpmn:boundaryEvent>
+      <bpmn:serviceTask id="Task_ReleaseCreditLine" name="Release credit line" isForCompensation="true" camunda:expression="${cardIssuingService.releaseCreditLine(execution)}">
+      </bpmn:serviceTask>
+      <bpmn:sequenceFlow id="Flow_T1" sourceRef="StartEvent_Tx" targetRef="Task_CreateCardAccount" />
+      <bpmn:sequenceFlow id="Flow_T2" sourceRef="Task_CreateCardAccount" targetRef="Task_ReserveCreditLine" />
+      <bpmn:sequenceFlow id="Flow_T3" sourceRef="Task_ReserveCreditLine" targetRef="UserTask_KycVerification" />
+      <bpmn:sequenceFlow id="Flow_T4" sourceRef="UserTask_KycVerification" targetRef="Gateway_KycPassed" />
+      <bpmn:sequenceFlow id="Flow_KycOk" name="yes" sourceRef="Gateway_KycPassed" targetRef="EndEvent_TxCompleted">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${kycPassed}</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_KycFailed" name="no" sourceRef="Gateway_KycPassed" targetRef="EndEvent_TxCancelled">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${!kycPassed}</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:association id="Association_Acc" associationDirection="One" sourceRef="Boundary_CompensateAccount" targetRef="Task_CloseCardAccount" />
+      <bpmn:association id="Association_Line" associationDirection="One" sourceRef="Boundary_CompensateCreditLine" targetRef="Task_ReleaseCreditLine" />
+    </bpmn:transaction>
+    <bpmn:boundaryEvent id="Boundary_IssuingCancelled" name="Issuing cancelled" attachedToRef="Transaction_IssueCard">
+      <bpmn:cancelEventDefinition id="CancelDef_Boundary" />
+    </bpmn:boundaryEvent>
+    <bpmn:sendTask id="Task_NotifyKycFailed" name="Notify KYC failure" camunda:class="com.academy.camunda.delegate.common.EmailNotificationDelegate">
+      <bpmn:extensionElements>
+        <camunda:field name="template">
+          <camunda:string>CARD_KYC_FAILED</camunda:string>
+        </camunda:field>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndEvent_KycFailed" name="Application cancelled">
+    </bpmn:endEvent>
+    <bpmn:serviceTask id="Task_DispatchCard" name="Dispatch card" camunda:asyncAfter="true" camunda:expression="${cardIssuingService.dispatchCard(execution)}">
+      <bpmn:documentation>asyncAfter: the dispatch is committed, then the rest continues in a new job/transaction.</bpmn:documentation>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_CardIssued" name="Card issued">
+    </bpmn:endEvent>
+    <bpmn:sendTask id="Task_NotifyNotEligible" name="Send regret letter" camunda:class="com.academy.camunda.delegate.common.EmailNotificationDelegate">
+      <bpmn:extensionElements>
+        <camunda:field name="template">
+          <camunda:string>CARD_REJECTED</camunda:string>
+        </camunda:field>
+      </bpmn:extensionElements>
+    </bpmn:sendTask>
+    <bpmn:endEvent id="EndEvent_NotEligible" name="Not eligible">
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_CardApplied" targetRef="Task_CheckEligibility" />
+    <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_CheckEligibility" targetRef="Gateway_Eligible" />
+    <bpmn:sequenceFlow id="Flow_Eligible" name="yes" sourceRef="Gateway_Eligible" targetRef="Task_DetermineOffers">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">${eligibility == 'ACCEPT'}</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_NotEligible" name="no" sourceRef="Gateway_Eligible" targetRef="Task_NotifyNotEligible" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Task_DetermineOffers" targetRef="Transaction_IssueCard" />
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Transaction_IssueCard" targetRef="Task_DispatchCard" />
+    <bpmn:sequenceFlow id="Flow_5" sourceRef="Task_DispatchCard" targetRef="EndEvent_CardIssued" />
+    <bpmn:sequenceFlow id="Flow_6" sourceRef="Boundary_IssuingCancelled" targetRef="Task_NotifyKycFailed" />
+    <bpmn:sequenceFlow id="Flow_7" sourceRef="Task_NotifyKycFailed" targetRef="EndEvent_KycFailed" />
+    <bpmn:sequenceFlow id="Flow_8" sourceRef="Task_NotifyNotEligible" targetRef="EndEvent_NotEligible" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_credit-card-application">
+    <bpmndi:BPMNPlane id="BPMNPlane_credit-card-application" bpmnElement="credit-card-application">
+      <bpmndi:BPMNShape id="Shape_StartEvent_CardApplied" bpmnElement="StartEvent_CardApplied">
+        <dc:Bounds x="82" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_CheckEligibility" bpmnElement="Task_CheckEligibility">
+        <dc:Bounds x="180" y="220" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_Eligible" bpmnElement="Gateway_Eligible">
+        <dc:Bounds x="335" y="235" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_DetermineOffers" bpmnElement="Task_DetermineOffers">
+        <dc:Bounds x="430" y="220" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Transaction_IssueCard" bpmnElement="Transaction_IssueCard" isExpanded="true">
+        <dc:Bounds x="570" y="120" width="640" height="280" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_StartEvent_Tx" bpmnElement="StartEvent_Tx">
+        <dc:Bounds x="592" y="202" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_CreateCardAccount" bpmnElement="Task_CreateCardAccount">
+        <dc:Bounds x="660" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_ReserveCreditLine" bpmnElement="Task_ReserveCreditLine">
+        <dc:Bounds x="810" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_UserTask_KycVerification" bpmnElement="UserTask_KycVerification">
+        <dc:Bounds x="960" y="180" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Gateway_KycPassed" bpmnElement="Gateway_KycPassed">
+        <dc:Bounds x="1085" y="195" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_TxCompleted" bpmnElement="EndEvent_TxCompleted">
+        <dc:Bounds x="1152" y="142" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_TxCancelled" bpmnElement="EndEvent_TxCancelled">
+        <dc:Bounds x="1152" y="322" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_CloseCardAccount" bpmnElement="Task_CloseCardAccount">
+        <dc:Bounds x="660" y="300" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_ReleaseCreditLine" bpmnElement="Task_ReleaseCreditLine">
+        <dc:Bounds x="810" y="300" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_NotifyKycFailed" bpmnElement="Task_NotifyKycFailed">
+        <dc:Bounds x="1064" y="460" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_KycFailed" bpmnElement="EndEvent_KycFailed">
+        <dc:Bounds x="1232" y="482" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_DispatchCard" bpmnElement="Task_DispatchCard">
+        <dc:Bounds x="1240" y="220" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_CardIssued" bpmnElement="EndEvent_CardIssued">
+        <dc:Bounds x="1402" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Task_NotifyNotEligible" bpmnElement="Task_NotifyNotEligible">
+        <dc:Bounds x="310" y="430" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_EndEvent_NotEligible" bpmnElement="EndEvent_NotEligible">
+        <dc:Bounds x="472" y="452" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_CompensateAccount" bpmnElement="Boundary_CompensateAccount">
+        <dc:Bounds x="692" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_CompensateCreditLine" bpmnElement="Boundary_CompensateCreditLine">
+        <dc:Bounds x="842" y="242" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Shape_Boundary_IssuingCancelled" bpmnElement="Boundary_IssuingCancelled">
+        <dc:Bounds x="1096" y="382" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Edge_Association_Acc" bpmnElement="Association_Acc">
+        <di:waypoint x="710" y="278" />
+        <di:waypoint x="710" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Association_Line" bpmnElement="Association_Line">
+        <di:waypoint x="860" y="278" />
+        <di:waypoint x="860" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_T1" bpmnElement="Flow_T1">
+        <di:waypoint x="628" y="220" />
+        <di:waypoint x="660" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_T2" bpmnElement="Flow_T2">
+        <di:waypoint x="760" y="220" />
+        <di:waypoint x="810" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_T3" bpmnElement="Flow_T3">
+        <di:waypoint x="910" y="220" />
+        <di:waypoint x="960" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_T4" bpmnElement="Flow_T4">
+        <di:waypoint x="1060" y="220" />
+        <di:waypoint x="1085" y="220" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_KycOk" bpmnElement="Flow_KycOk">
+        <di:waypoint x="1110" y="195" />
+        <di:waypoint x="1110" y="160" />
+        <di:waypoint x="1152" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_KycFailed" bpmnElement="Flow_KycFailed">
+        <di:waypoint x="1110" y="245" />
+        <di:waypoint x="1110" y="340" />
+        <di:waypoint x="1152" y="340" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_1" bpmnElement="Flow_1">
+        <di:waypoint x="118" y="260" />
+        <di:waypoint x="180" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_2" bpmnElement="Flow_2">
+        <di:waypoint x="280" y="260" />
+        <di:waypoint x="335" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_Eligible" bpmnElement="Flow_Eligible">
+        <di:waypoint x="385" y="260" />
+        <di:waypoint x="430" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_NotEligible" bpmnElement="Flow_NotEligible">
+        <di:waypoint x="360" y="285" />
+        <di:waypoint x="360" y="430" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_3" bpmnElement="Flow_3">
+        <di:waypoint x="530" y="260" />
+        <di:waypoint x="570" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_4" bpmnElement="Flow_4">
+        <di:waypoint x="1210" y="260" />
+        <di:waypoint x="1240" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_5" bpmnElement="Flow_5">
+        <di:waypoint x="1340" y="260" />
+        <di:waypoint x="1402" y="260" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_6" bpmnElement="Flow_6">
+        <di:waypoint x="1114" y="418" />
+        <di:waypoint x="1114" y="460" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_7" bpmnElement="Flow_7">
+        <di:waypoint x="1164" y="500" />
+        <di:waypoint x="1232" y="500" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Edge_Flow_8" bpmnElement="Flow_8">
+        <di:waypoint x="410" y="470" />
+        <di:waypoint x="472" y="470" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
