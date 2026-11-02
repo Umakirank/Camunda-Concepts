@@ -1,4 +1,10 @@
 target/
 camunda-h2-db/
-*.iml
-.idea/
+
+# Eclipse
+.settings/
+.project
+.classpath
+
+# Logs
+*.log
